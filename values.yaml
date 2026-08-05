@@ -1,0 +1,69 @@
+# Base of the merge. Argo CD layers the four values-repo files on top of this, in
+# order (hcAppset.yaml):
+#
+#   this file                                             <- dhcp_api, crossplane
+#     -> sites/configValues.yaml                          <- dhcp_values globals
+#       -> sites/<site>/values.yaml
+#         -> sites/<site>/mces/<mce>/values.yaml
+#           -> sites/<site>/mces/<mce>/hostedClusters/<cluster>.yaml
+#
+# A key set here cannot be unset downstream, so this file carries only what is
+# genuinely constant across every hosted cluster.
+
+crossplane:
+  # Namespace the Crossplane Request CR is created in.
+  #
+  # NOTE: hcAppset.yaml sets the Application's destination.namespace to
+  # openshift-gitops, so Argo CD must be permitted to write a Request into
+  # crossplane-system. If it is not, set this to openshift-gitops instead —
+  # provider-http reconciles a Request in any namespace.
+  namespace: crossplane-system
+
+  # Name of the Crossplane ProviderConfig holding the DHCP API connection.
+  # Installed by redbull-platform's provider-http chart.
+  providerConfigName: dhcp-http
+
+# Where the DHCP scope API lives.
+#
+# A platform constant, not per-cluster config: there is one Windows DHCP server
+# (plus its failover partner) shared by every site, and one API in front of it.
+# The partner is a failover peer, not an independent server — it gets no API of
+# its own and is managed through the failover relationship on the primary.
+#
+# In-cluster Service address on purpose: Crossplane provider-http runs in the
+# same cluster, so a Route would add a public hop and TLS for no benefit.
+#
+# If a genuinely separate DHCP server ever appears it needs its own API, and this
+# key moves down to sites/<site>/values.yaml. Nothing in the chart or the CI
+# validator has to change for that — Helm merges it and the validator ignores
+# keys it does not own.
+dhcp_api:
+  url: http://dhcp-scope-manager.dhcp-scope-manager.svc.cluster.local:8080
+
+  # Bearer token for the API. OPTIONAL — the API disables auth entirely when its
+  # own DHCP_API_TOKEN is unset, and an empty ref here renders no Authorization
+  # header at all.
+  #
+  # When set, all three keys are required: provider-http resolves them from the
+  # live Secret at reconcile time and stores only the {{ name:namespace:key }}
+  # placeholder in the CR's spec and logs, so the token never reaches git or the
+  # Argo CD UI. A partially-filled ref renders no header rather than an
+  # unresolvable placeholder sent as literal text.
+  tokenSecretRef: {}
+  #   name: dhcp-api-token
+  #   namespace: crossplane-system
+  #   key: token
+
+# dhcp_values is NOT set here on purpose.
+#
+# It is owned entirely by the values repo (day1 / platform-config). A value set
+# here would be inherited by every hosted cluster and could not be unset by a
+# site or cluster file — and since the Request CR is named after
+# dhcp_values.network, every cluster would collide on one object name.
+#
+# The DHCP template is gated on dhcp_values.scopeName, so a cluster file with no
+# dhcp_values block renders no Request at all. That is the correct outcome for a
+# cluster that does not need a scope.
+#
+# See docs/dhcp_values.md in team-redbull/dhcp_scope_manager for the field
+# reference.

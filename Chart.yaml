@@ -1,0 +1,14 @@
+apiVersion: v2
+name: hostedclusters-setup
+description: >-
+  Per-hosted-cluster setup, rendered by the gitops-day1 ApplicationSet cascade
+  from sites/<site>/mces/<mce>/hostedClusters/<cluster>.yaml. Currently carries
+  the DHCP scope integration only — see README.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - hostedcluster
+  - dhcp
+  - crossplane
+  - openshift
