@@ -1,8 +1,3 @@
-# GENERATED — DO NOT EDIT.
-#
-# Synced from team-redbull/dhcp_scope_manager, helm/templates/_dhcp-helpers.tpl.
-# Edit it there and re-run `scripts/sync_chart.py --target <this chart>`;
-# changes made here are silently reverted on the next sync.
 {{/*
 Derive the default gateway — the subnet's .254 address — for a values file that omits
 the key entirely. Resolved here rather than left to the API because Crossplane
