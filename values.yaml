@@ -40,19 +40,29 @@ crossplane:
 dhcp_api:
   url: http://dhcp-scope-manager.dhcp-scope-manager.svc.cluster.local:8080
 
-  # Bearer token for the API. OPTIONAL — the API disables auth entirely when its
-  # own DHCP_API_TOKEN is unset, and an empty ref here renders no Authorization
-  # header at all.
+  # Bearer token for the API. The API disables auth entirely when its own
+  # DHCP_API_TOKEN is unset, and an empty ref here renders no Authorization
+  # header at all — so this was `{}` while the API ran unauthenticated.
   #
-  # When set, all three keys are required: provider-http resolves them from the
-  # live Secret at reconcile time and stores only the {{ name:namespace:key }}
-  # placeholder in the CR's spec and logs, so the token never reaches git or the
-  # Argo CD UI. A partially-filled ref renders no header rather than an
-  # unresolvable placeholder sent as literal text.
-  tokenSecretRef: {}
-  #   name: dhcp-api-token
-  #   namespace: crossplane-system
-  #   key: token
+  # It is filled in now because the deploy chart generates that token
+  # unconditionally (helm-charts-dhcp-scope-manager templates/secret.yaml): the
+  # API requires a Bearer token from the moment that chart is deployed, and a
+  # Request with no Authorization header gets 401 on every reconcile. The default
+  # therefore tracks where that chart puts the Secret — release
+  # `dhcp-scope-manager` in its own namespace. provider-http's ClusterRole grants
+  # secrets/* cluster-wide, so reading it from crossplane-system needs no extra RBAC.
+  #
+  # All three keys are required: provider-http resolves them from the live Secret
+  # at reconcile time and stores only the {{ name:namespace:key }} placeholder in
+  # the CR's spec and logs, so the token never reaches git or the Argo CD UI. A
+  # partially-filled ref renders no header rather than an unresolvable placeholder
+  # sent as literal text.
+  #
+  # Set `tokenSecretRef: null` to go back to unauthenticated requests.
+  tokenSecretRef:
+    name: dhcp-scope-manager-api-token
+    namespace: dhcp-scope-manager
+    key: api-token
 
 # dhcp_values is NOT set here on purpose.
 #
