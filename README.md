@@ -14,7 +14,7 @@ a single values file in the values repo.
 | Values repo | `team-redbull/day1` (GitHub) · `gitops-day1/platform-config` (GitLab) |
 | Rendered by | `argocd-platform/hostedClusters/templates/hcAppset.yaml`, tier 3 |
 | Field reference | `docs/dhcp_values.md` in `team-redbull/dhcp_scope_manager` |
-| Templates synced from | `team-redbull/dhcp_scope_manager`, `helm/templates/` |
+| Payload contract | `CLAUDE.md` §5 in `team-redbull/dhcp_scope_manager` |
 
 ## How a values file becomes a DHCP scope
 
@@ -67,20 +67,45 @@ values repo and **cannot see this file**. Anything moved here loses CI validatio
 A cluster with no `dhcp_values` block renders nothing — the template is gated on
 `dhcp_values.scopeName`.
 
-## Templates are generated — do not edit
+## Templates and tests
 
-`templates/dhcp-scope-request.yaml` and `templates/_dhcp-helpers.tpl` are synced
-from `team-redbull/dhcp_scope_manager`, which is their source of truth and holds
-the test suite that renders them (including a parity test asserting the rendered
-body equals what the API's GET returns).
+`templates/dhcp-scope-request.yaml` and `templates/_dhcp-helpers.tpl` are **owned
+here**. Edit them here; nothing overwrites them.
+
+They used to be synced from `team-redbull/dhcp_scope_manager` with a
+`GENERATED — DO NOT EDIT` header. That was backwards: the API repo does not deploy
+this chart, and keeping a consumer's source in the producer's repo made the API
+repo own something it never renders. The templates and their tests moved here
+together, and `sync_chart.py` is gone.
 
 ```bash
-# in a dhcp_scope_manager checkout
-python3 scripts/sync_chart.py --target ../helm-charts-hostedclusters-setup
-python3 scripts/sync_chart.py --target ../helm-charts-hostedclusters-setup --check   # CI
+pip install -r requirements.txt
+pytest -q          # 48 tests: 41 rendering + 7 payload parity
+helm lint .
 ```
 
-Editing them here is silently reverted on the next sync.
+Both test modules skip themselves without `helm` on PATH, so CI verifies the
+binary is present before running them — otherwise a failed install turns the whole
+suite into silent skips and the job still passes.
+
+### What the tests cover
+
+- **`tests/test_dhcp_scope_request.py`** — the rendered `Request` CR: object
+  naming, `baseUrl`, all four verb mappings, the bearer-token placeholder, the
+  `required` guards, and the gating on `dhcp_values.scopeName`.
+- **`tests/test_render_parity.py`** — that `payload.body` equals the payload shape
+  the DHCP API returns from `GET`, field order included.
+
+That second one is the contract worth understanding. provider-http compares the
+GET response against `payload.body` every ~60s and PUTs on any difference, so a
+field this chart renders differently from what the API reports produces a PUT
+every 60 seconds forever.
+
+The check is deliberately **not** a cross-repo import. This repo asserts
+`render == CANONICAL_BODY`; `dhcp_scope_manager` asserts `GET == the same shape`.
+Both pin the payload documented in that repo's `CLAUDE.md` §5, so changing the
+shape means changing it in both places on purpose — which is the point, since it
+is the interface between them.
 
 ## Convergence
 

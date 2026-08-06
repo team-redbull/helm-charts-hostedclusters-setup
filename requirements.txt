@@ -1,0 +1,7 @@
+# Test-only dependencies. The chart itself needs nothing but helm.
+#
+# Deliberately minimal: these tests render templates and parse the result. They
+# do not import the DHCP API's code, so nothing here has to track
+# team-redbull/dhcp_scope_manager's pins.
+pytest==8.3.0
+PyYAML>=6.0,<7.0

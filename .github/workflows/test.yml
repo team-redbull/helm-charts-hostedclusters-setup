@@ -1,0 +1,45 @@
+name: Tests
+
+# Renders the chart and checks the result. No cluster, no DHCP server, no API.
+#
+# The other half of the reconciliation contract lives in
+# team-redbull/dhcp_scope_manager, whose suite asserts that GET returns the same
+# payload shape tests/test_render_parity.py asserts this chart renders. Neither
+# repo imports the other, so neither workflow needs the other checked out.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  render:
+    name: Template and parity tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - uses: azure/setup-helm@v4
+
+      - name: Verify helm is on PATH
+        # Both test modules carry a module-level skipif on the helm binary, so a
+        # failed install would turn all 48 tests into silent skips and the job
+        # would still pass. Fail here instead, where the cause is obvious.
+        run: helm version --short
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest -q
+
+      - name: Lint the chart
+        # Catches malformed Chart.yaml and values.yaml that still happen to
+        # render — helm template alone does not check chart metadata.
+        run: helm lint .
