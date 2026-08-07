@@ -65,7 +65,45 @@ That boundary matters: `validate_dhcp_values.py` in `dhcp_scope_manager` walks t
 values repo and **cannot see this file**. Anything moved here loses CI validation.
 
 A cluster with no `dhcp_values` block renders nothing — the template is gated on
-`dhcp_values.scopeName`.
+`dhcp_values.scopeName`. Note the gate only works because nothing gives `scopeName` a
+default: `dhcp_values` itself is truthy for every cluster once `sites/configValues.yaml`
+sets the globals.
+
+### Adding DNS servers per site
+
+`dns.servers` is a **list**, and Helm replaces lists on merge rather than appending — a
+site file that sets `dns.servers` wipes the entries from `sites/configValues.yaml`
+instead of extending them. Use `dns.extraServers` for the per-site additions:
+
+```yaml
+# sites/configValues.yaml
+dhcp_values:
+  dns:
+    servers: ["10.50.1.5", "10.50.1.6"]     # every site
+
+# sites/<site>/values.yaml
+dhcp_values:
+  dns:
+    extraServers: ["10.50.1.7"]             # this site only
+```
+
+renders `"dnsServers": ["10.50.1.5","10.50.1.6","10.50.1.7"]` — globals first, so they
+keep the primary/secondary slots. Order is part of the comparison, not cosmetic.
+
+Mappings need no such treatment: `failover` in a cluster file deep-merges onto the
+global `partnerServer` / `mode` / `serverRole` as you would expect.
+
+### Derived defaults
+
+Three fields may be omitted and are resolved to a concrete value **at render time**,
+never left for the API to fill in — provider-http compares the GET response against
+this body, and GET always reports concrete values:
+
+| Field | Derived as | Notes |
+|---|---|---|
+| `subnetMask` | `255.255.255.0` | |
+| `gateway` | the subnet's `.254` | Only derivable for a /24; any other mask without an explicit gateway fails the render. `gateway: ""` means no option 3 and is honoured as written. |
+| `failover.relationshipName` | `<scopeName>-failover` | Windows caps it at 64 characters; a longer derived name fails the render rather than being truncated. |
 
 ## Templates and tests
 
@@ -80,7 +118,7 @@ together, and `sync_chart.py` is gone.
 
 ```bash
 pip install -r requirements.txt
-pytest -q          # 48 tests: 41 rendering + 7 payload parity
+pytest -q          # 53 tests: 45 rendering + 8 payload parity
 helm lint .
 ```
 

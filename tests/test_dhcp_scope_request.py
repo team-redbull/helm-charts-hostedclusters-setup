@@ -110,8 +110,20 @@ class TestHelmTemplateBasic:
         cr = _parse_cr(_helm_template(_VALID_VALUES))
         assert cr["metadata"]["name"] == "dhcp-scope-10-20-30-0"
 
-    def test_cr_namespace_defaults_to_crossplane_system(self):
+    def test_cr_carries_no_namespace_by_default(self):
+        """Request is cluster-scoped in provider-http v1.0.14.
+
+        The API server drops a namespace on a cluster-scoped object, so a rendered
+        one leaves Argo CD comparing a desired resource key that has a namespace
+        against a live one that does not — the Application never reaches Synced.
+        """
         cr = _parse_cr(_helm_template(_VALID_VALUES))
+        assert "namespace" not in cr["metadata"]
+
+    def test_cr_namespace_is_rendered_when_set(self):
+        """Still settable for an older provider-http, where Request was namespaced."""
+        values = _VALID_VALUES + "crossplane:\n  namespace: crossplane-system\n"
+        cr = _parse_cr(_helm_template(values))
         assert cr["metadata"]["namespace"] == "crossplane-system"
 
     def test_provider_config_name_defaults_to_dhcp_http(self):
@@ -478,6 +490,47 @@ class TestHelmFailoverRendering:
         )
         body = self._body(values)
         assert body["failover"]["loadBalancePercent"] == 0
+
+    def test_omitted_relationship_name_derives_from_scope_name(self):
+        """Resolved here, not left to the API.
+
+        GET reports the concrete relationship name Windows holds, so the desired
+        body has to carry it too — an omission that reached the wire unresolved
+        would fail the containment check on every poll.
+        """
+        values = _values_with_failover(
+            partnerServer="dhcp02.lab.local",
+            mode="HotStandby",
+            serverRole="Active",
+            reservePercent=5,
+            maxClientLeadTimeMinutes=60,
+        )
+        assert self._body(values)["failover"]["relationshipName"] == "test-scope-failover"
+
+    def test_explicit_relationship_name_is_passed_through(self):
+        """The default is a fallback, never an override of what the values file says."""
+        values = _values_with_failover(
+            partnerServer="dhcp02.lab.local",
+            relationshipName="hand-picked-name",
+            mode="HotStandby",
+            serverRole="Active",
+            reservePercent=5,
+            maxClientLeadTimeMinutes=60,
+        )
+        assert self._body(values)["failover"]["relationshipName"] == "hand-picked-name"
+
+    def test_derived_relationship_name_over_64_chars_fails_the_render(self):
+        """Windows caps the name at 64 — fail loudly rather than emit one it refuses."""
+        values = _values_with_failover(
+            partnerServer="dhcp02.lab.local",
+            mode="HotStandby",
+            serverRole="Active",
+            reservePercent=5,
+            maxClientLeadTimeMinutes=60,
+        ).replace('scopeName: "test-scope"', f'scopeName: "{"x" * 60}"')
+        stderr = _helm_template_fails(values)
+        assert "64" in stderr and "relationshipName" in stderr
+
 
 class TestHelmSecretInjection:
     """Bearer token injection.

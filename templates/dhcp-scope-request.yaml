@@ -3,7 +3,16 @@ apiVersion: http.crossplane.io/v1alpha2
 kind: Request
 metadata:
   name: dhcp-scope-{{ required "dhcp_values.network is required" .Values.dhcp_values.network | replace "." "-" }}
-  namespace: {{ .Values.crossplane.namespace | default "crossplane-system" }}
+  {{- /* Emitted only when crossplane.namespace is set, and it is empty by default.
+         provider-http made Request a *cluster-scoped* CRD (spec.scope: Cluster — check with
+         `kubectl get crd requests.http.crossplane.io -o jsonpath='{.spec.scope}'`). The API
+         server drops a namespace on a cluster-scoped object, so Argo CD ends up comparing a
+         desired resource key that carries a namespace against a live one that does not, and
+         the Application never settles. Kept configurable rather than deleted because an
+         older provider-http, where Request was namespaced, still needs it. */}}
+  {{- with .Values.crossplane.namespace }}
+  namespace: {{ . }}
+  {{- end }}
 spec:
   deletionPolicy: Delete
   providerConfigRef:

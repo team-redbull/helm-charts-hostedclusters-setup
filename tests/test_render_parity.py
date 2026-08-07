@@ -138,3 +138,19 @@ def test_exclusion_order_is_preserved_as_written():
 def test_dns_server_order_is_preserved():
     """Primary/secondary semantics — never sorted, in either implementation."""
     assert _rendered_body(_VALUES)["dnsServers"] == ["10.50.1.5", "10.50.1.6"]
+
+
+def test_extra_servers_append_after_the_globals():
+    """A site file adds a third server without displacing the two globals.
+
+    dns.servers and dns.extraServers are separate keys because Helm replaces lists
+    on merge: a site file writing dns.servers would wipe sites/configValues.yaml's
+    entries rather than extend them. The globals stay primary and secondary.
+    """
+    values = _VALUES.replace(
+        '    domain: "lab.local"',
+        '    extraServers:\n      - "10.50.1.7"\n    domain: "lab.local"',
+    )
+    assert _rendered_body(values)["dnsServers"] == [
+        "10.50.1.5", "10.50.1.6", "10.50.1.7",
+    ]

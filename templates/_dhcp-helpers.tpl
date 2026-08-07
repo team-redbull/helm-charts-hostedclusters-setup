@@ -39,7 +39,15 @@ one documented in CLAUDE.md section 5 and asserted in tests/test_helm.py.
 {{- $v := .Values.dhcp_values | default dict -}}
 
 {{- $dns := $v.dns | default dict -}}
-{{- $dnsServers := $dns.servers | default (list) -}}
+{{- /* Globals first, then per-site additions. A site file cannot append to dns.servers:
+       Helm deep-merges mappings but *replaces* lists, so `servers` in sites/<site>/values.yaml
+       would silently wipe the ones from sites/configValues.yaml. extraServers is a separate
+       key precisely so the merge keeps both halves.
+
+       The concatenation order is the wire order and is load-bearing twice over: option 6 has
+       primary/secondary semantics, and the containment check in CLAUDE.md section 9 compares
+       the list element by element — reorder these and Crossplane re-PUTs on every poll. */}}
+{{- $dnsServers := concat ($dns.servers | default (list)) ($dns.extraServers | default (list)) -}}
 {{- $dnsDomain := $dns.domain | default "" -}}
 
 {{- /* PXE options 66/67. Optional, but both-or-nothing — the API and the CI validator
@@ -69,9 +77,20 @@ one documented in CLAUDE.md section 5 and asserted in tests/test_helm.py.
   "exclusions": {{ $v.exclusions | default (list) | toJson }},
 {{- if $useFailover }}
 {{- $f := $v.failover }}
+{{- /* relationshipName defaults to <scopeName>-failover. Resolved here rather than left to
+       the API for the same reason as gateway: GET reports the concrete name Windows holds,
+       so the desired body must carry it too or containment never passes. The API and the CI
+       validator both keep the field required — they only ever see a resolved value.
+
+       Windows caps a relationship name at 64 characters, so fail loudly rather than emit a
+       name the DHCP server will refuse; _CiFailover enforces the same bound in CI. */}}
+{{- $relationshipName := $f.relationshipName | default (printf "%s-failover" $v.scopeName) }}
+{{- if gt (len $relationshipName) 64 }}
+{{- fail (printf "failover.relationshipName %q is %d characters; Windows allows at most 64. Set dhcp_values.failover.relationshipName explicitly to something shorter." $relationshipName (len $relationshipName)) }}
+{{- end }}
   "failover": {
     "partnerServer": {{ $f.partnerServer | toJson }},
-    "relationshipName": {{ $f.relationshipName | toJson }},
+    "relationshipName": {{ $relationshipName | toJson }},
     "mode": {{ $f.mode | toJson }},
     "serverRole": {{ if eq $f.mode "LoadBalance" }}"Active"{{ else }}{{ $f.serverRole | toJson }}{{ end }},
     "reservePercent": {{ if eq $f.mode "LoadBalance" }}0{{ else }}{{ $f.reservePercent | default 0 | int }}{{ end }},
