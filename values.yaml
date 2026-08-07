@@ -10,6 +10,22 @@
 # A key set here cannot be unset downstream, so this file carries only what is
 # genuinely constant across every hosted cluster.
 
+# The hosted cluster's own name, e.g. "ocp4-prep-herzi-site1-a".
+#
+# Passed in by hcAppset.yaml as a Helm parameter (--set), NOT from the values repo: it comes
+# from the name of the cluster's values file, and Helm has no notion of which file a value
+# came from — it merges the four valueFiles into one flat .Values. The appset derives it
+# from the same `.path.filename | trimSuffix` expression that names the Application.
+#
+# dhcp_values.scopeName defaults to this, so a values file never has to repeat a name its
+# own file name already carries. A chart-owned key rather than injecting straight into
+# dhcp_values.scopeName because helm parameters outrank valueFiles: written there, an
+# explicit scopeName in a values file could never win.
+#
+# Empty here so a render without the appset fails loudly in dhcp.scopeName rather than
+# silently producing a scope with no name.
+clusterName: ""
+
 crossplane:
   # Namespace the Crossplane Request CR is created in. Empty means no namespace
   # field is rendered at all, which is what a cluster-scoped Request needs.
@@ -80,9 +96,11 @@ dhcp_api:
 # site or cluster file — and since the Request CR is named after
 # dhcp_values.network, every cluster would collide on one object name.
 #
-# The DHCP template is gated on dhcp_values.scopeName, so a cluster file with no
+# The DHCP template is gated on dhcp_values.network, so a cluster file with no
 # dhcp_values block renders no Request at all. That is the correct outcome for a
-# cluster that does not need a scope.
+# cluster that does not need a scope. (It was gated on scopeName until that gained a
+# default — see dhcp.scopeName — which made it resolve for every cluster and gate
+# nothing. network is the scope's identity and only a cluster's own file ever sets it.)
 #
 # See docs/dhcp_values.md in team-redbull/dhcp_scope_manager for the field
 # reference.

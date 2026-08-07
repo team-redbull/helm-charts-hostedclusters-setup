@@ -81,14 +81,16 @@ _VALUES = textwrap.dedent("""\
 """)
 
 
-def _rendered_body(values: str) -> dict:
+def _rendered_body(values: str, cluster_name: str | None = None) -> dict:
     with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as fh:
         fh.write(values)
         path = fh.name
-    result = subprocess.run(
-        ["helm", "template", "parity", CHART, "-f", path],
-        capture_output=True, text=True,
-    )
+    cmd = ["helm", "template", "parity", CHART, "-f", path]
+    if cluster_name is not None:
+        # What hcAppset.yaml passes: the hosted cluster's own name, which
+        # dhcp_values.scopeName falls back to when no values file sets one.
+        cmd += ["--set-string", f"clusterName={cluster_name}"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     cr = next(iter(yaml.safe_load_all(result.stdout)))
     # payload.body is a JSON *string* — provider-http types the field as one, and
@@ -99,6 +101,18 @@ def _rendered_body(values: str) -> dict:
 def test_rendered_body_matches_the_api_payload_shape():
     """Rendered PUT body == the documented GET response, field for field."""
     assert _rendered_body(_VALUES) == CANONICAL_BODY
+
+
+def test_derived_scope_name_renders_the_same_body():
+    """Deleting scopeName from a values file must change nothing on the wire.
+
+    Whole point of the derivation: the name moves from the file's contents to the
+    file's name, and the request body is byte-identical either way. If it were not,
+    every existing scope would take a rename PUT on the first reconcile after this
+    shipped.
+    """
+    without = _VALUES.replace('  scopeName: "Cluster-A"\n', "")
+    assert _rendered_body(without, cluster_name="Cluster-A") == _rendered_body(_VALUES)
 
 
 def test_rendered_field_order_matches_the_api():

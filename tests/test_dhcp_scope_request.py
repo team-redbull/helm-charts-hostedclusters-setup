@@ -40,19 +40,24 @@ def _helm_template(values_content: str, extra_args: list[str] | None = None) -> 
     return result.stdout
 
 
-def _helm_template_fails(values_content: str) -> str:
+def _helm_template_fails(values_content: str, extra_args: list[str] | None = None) -> str:
     """Expect helm template to fail; return stderr."""
     with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as fh:
         fh.write(values_content)
         values_path = fh.name
 
-    result = subprocess.run(
-        ["helm", "template", "test-release", HELM_CHART, "-f", values_path],
-        capture_output=True,
-        text=True,
-    )
+    cmd = ["helm", "template", "test-release", HELM_CHART, "-f", values_path]
+    if extra_args:
+        cmd.extend(extra_args)
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
     assert result.returncode != 0, "Expected helm template to fail but it succeeded"
     return result.stderr
+
+
+def _cluster_name(name: str) -> list[str]:
+    """The --set hcAppset.yaml makes, carrying the hosted cluster's own name."""
+    return ["--set-string", f"clusterName={name}"]
 
 
 def _parse_cr(rendered: str) -> dict:
@@ -146,14 +151,139 @@ class TestHelmTemplateBasic:
         assert cr["spec"]["deletionPolicy"] == "Delete"
 
 
+class TestScopeNameDerivation:
+    """scopeName defaults to the hosted cluster's own name.
+
+    One values file is one hosted cluster is one DHCP scope, so the cluster's file
+    name already carries the scope name. Helm never sees file names, so hcAppset.yaml
+    passes it as --set clusterName. Mirrored by _validate_dhcp_content in
+    team-redbull/dhcp_scope_manager, which derives the same name from the file stem.
+    """
+
+    # _VALID_VALUES minus the scopeName line, so the only source left is clusterName.
+    _NO_SCOPE_NAME = _VALID_VALUES.replace('  scopeName: "test-scope"\n', "")
+
+    def test_omitted_scope_name_derives_the_cluster_name(self):
+        cr = _parse_cr(_helm_template(self._NO_SCOPE_NAME, _cluster_name("cluster-a")))
+        body = json.loads(cr["spec"]["forProvider"]["payload"]["body"])
+        assert body["scopeName"] == "cluster-a"
+
+    def test_explicit_scope_name_beats_the_cluster_name(self):
+        """An explicit value wins, so nothing already written has to change.
+
+        Load-bearing that it is a chart-owned key rather than --set
+        dhcp_values.scopeName: helm parameters outrank valueFiles, so injecting it
+        there would make the values file impossible to honour.
+        """
+        cr = _parse_cr(_helm_template(_VALID_VALUES, _cluster_name("from-file-name")))
+        body = json.loads(cr["spec"]["forProvider"]["payload"]["body"])
+        assert body["scopeName"] == "test-scope"
+
+    def test_empty_scope_name_derives(self):
+        values = _VALID_VALUES.replace('  scopeName: "test-scope"', '  scopeName: ""')
+        cr = _parse_cr(_helm_template(values, _cluster_name("cluster-a")))
+        body = json.loads(cr["spec"]["forProvider"]["payload"]["body"])
+        assert body["scopeName"] == "cluster-a"
+
+    def test_neither_source_fails_the_render(self):
+        """A name that cannot be resolved is a hard failure, not a silent skip.
+
+        The old scopeName gate turned this into "render nothing", which hid the
+        misconfiguration rather than reporting it.
+        """
+        stderr = _helm_template_fails(self._NO_SCOPE_NAME)
+        assert "could not be resolved" in stderr
+
+    def test_cluster_name_with_a_file_suffix_fails(self):
+        """Catches an appset that forgot to trim, rather than creating a live scope
+        on the Windows server literally named "cluster-a.yaml"."""
+        stderr = _helm_template_fails(self._NO_SCOPE_NAME, _cluster_name("cluster-a.yaml"))
+        assert "still carries a file suffix" in stderr
+
+    @staticmethod
+    def _failover_without_scope_name() -> str:
+        """A failover block with no scopeName and no relationshipName, so both have
+        to derive. Built via _values_with_failover for its correct YAML nesting."""
+        values = _values_with_failover(
+            partnerServer="dhcp02.lab.local",
+            mode="HotStandby",
+            serverRole="Active",
+            reservePercent=5,
+            maxClientLeadTimeMinutes=60,
+        )
+        assert '  scopeName: "test-scope"\n' in values
+        return values.replace('  scopeName: "test-scope"\n', "")
+
+    def test_derived_name_also_drives_the_failover_relationship_name(self):
+        cr = _parse_cr(
+            _helm_template(self._failover_without_scope_name(), _cluster_name("cluster-a"))
+        )
+        body = json.loads(cr["spec"]["forProvider"]["payload"]["body"])
+        assert body["failover"]["relationshipName"] == "cluster-a-failover"
+
+    def test_derived_relationship_name_over_64_chars_is_rejected(self):
+        """Windows caps a relationship name at 64, so a cluster name is capped at 55
+        once "-failover" is appended. Fails the render rather than emitting a name
+        the DHCP server will refuse."""
+        stderr = _helm_template_fails(
+            self._failover_without_scope_name(), _cluster_name("c" * 60)
+        )
+        assert "at most 64" in stderr
+
+
+class TestDhcpOptOutGate:
+    """A cluster that wants no DHCP scope renders no Request — it does not error.
+
+    The air-gapped copy of this chart also carries the HostedCluster / NodePool that
+    provision the cluster itself, and it renders once per hosted cluster. An ungated
+    Request would make `required "dhcp_values.network is required"` fail the *whole*
+    render for a cluster that never asked for a scope.
+    """
+
+    def test_no_dhcp_values_key_at_all_renders_nothing(self):
+        """The nil guard. Without the .Values.dhcp_values half of the gate this
+        aborts with "nil pointer evaluating interface {}.network"."""
+        values = "dhcp_api:\n  url: https://dhcp-api.lab.local\n"
+        assert _helm_template(values, _cluster_name("cluster-a")).strip() == ""
+
+    def test_inherited_globals_without_network_render_nothing(self):
+        """sites/configValues.yaml gives every cluster a dhcp_values block, so
+        inheriting one is not opting in. Only the cluster's own network is."""
+        values = textwrap.dedent("""\
+            dhcp_api:
+              url: https://dhcp-api.lab.local
+            dhcp_values:
+              leaseDurationDays: 8
+              dns:
+                servers: ["10.0.0.53"]
+                domain: "lab.local"
+              failover:
+                partnerServer: "dhcp02.lab.local"
+                mode: "HotStandby"
+                serverRole: "Active"
+                reservePercent: 5
+                maxClientLeadTimeMinutes: 60
+        """)
+        assert _helm_template(values, _cluster_name("cluster-a")).strip() == ""
+
+    def test_network_present_without_scope_name_renders_a_request(self):
+        """The case the whole change exists for: the gate must not depend on
+        scopeName, which now resolves for every cluster."""
+        no_scope_name = _VALID_VALUES.replace('  scopeName: "test-scope"\n', "")
+        cr = _parse_cr(_helm_template(no_scope_name, _cluster_name("cluster-a")))
+        assert cr["kind"] == "Request"
+
+
 class TestHelmRequiredFields:
 
     def test_network_required(self):
         """helm template fails when network is explicitly set to empty string.
 
-        Omitting dhcp_values entirely renders nothing at all (the template is gated
-        on scopeName), so the `required` guard is reached only by supplying a scope
-        whose network resolves to an empty / null string.
+        Omitting the network key renders nothing at all — that is the opt-out gate.
+        The `required` guard is reached only by writing the key and leaving it empty,
+        which is why the gate tests presence (hasKey) rather than truthiness: an
+        absent key means "no scope wanted", an empty one means a malformed scope, and
+        collapsing the two would let this typo disappear silently.
         """
         values = textwrap.dedent("""\
             dhcp_api:

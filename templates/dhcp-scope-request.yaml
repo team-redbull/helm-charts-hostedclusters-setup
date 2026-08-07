@@ -1,4 +1,26 @@
-{{- if and .Values.dhcp_values .Values.dhcp_values.scopeName }}
+{{- /* Gated on network, the scope's identity (CLAUDE.md section 5: "the sole identifier of
+       the resource") and the one dhcp_values key only a cluster's own file ever sets. So
+       "does this cluster have a subnet of its own?" is exactly "does this cluster want a
+       DHCP scope?", and the gate now tests the same key as the `required` below — the
+       template can no longer enter a branch it cannot finish.
+
+       NOT scopeName: it defaults to the hosted cluster's name (dhcp.scopeName), so it
+       resolves for every cluster and gates nothing. Leaving it here would render a Request
+       for a cluster that never asked for one, and in the air-gapped copy of this chart —
+       which also carries the HostedCluster/NodePool — the `required` below would then fail
+       the *whole* render, taking down the resources that actually provision the cluster.
+
+       hasKey, not truthiness, so that omitting network and writing it empty stay different
+       things — the same distinction gateway draws below. An absent key means "this cluster
+       wants no scope" and renders nothing; `network: ""` is a malformed scope and must
+       reach the `required` guard rather than disappear silently.
+
+       The .Values.dhcp_values half is a nil guard, not a redundant truthiness check: with
+       no dhcp_values key at all, hasKey would be handed a nil rather than a map. `and`
+       short-circuits, so the second operand is never reached. sites/configValues.yaml
+       normally makes it truthy for everyone, but not when the chart renders without the
+       values repo. */}}
+{{- if and .Values.dhcp_values (hasKey .Values.dhcp_values "network") }}
 apiVersion: http.crossplane.io/v1alpha2
 kind: Request
 metadata:

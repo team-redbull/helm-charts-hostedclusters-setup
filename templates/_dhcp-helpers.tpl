@@ -24,6 +24,42 @@ Takes a dict with "network" and "mask". Emits a quoted IPv4 address.
 {{- end -}}
 
 {{/*
+Resolve the scope name: dhcp_values.scopeName when a values file sets one, otherwise the
+hosted cluster's own name.
+
+One values file is one hosted cluster is one DHCP scope, so the file name already *is* the
+name — repeating it in the file could only ever be redundant or wrong. It arrives as
+.Values.clusterName because Helm has no notion of which file a value came from: it merges
+the four valueFiles into one flat .Values. hcAppset.yaml passes it with --set, from the
+same `.path.filename | trimSuffix` expression that names the Application (see values.yaml).
+
+Resolved here rather than left to the API for the same reason as gateway: GET reports the
+concrete name Windows holds, so the desired body must carry it too, or the containment
+check in CLAUDE.md section 9 never passes and Crossplane re-PUTs forever. Mirrored by
+_validate_dhcp_content in scripts/validate_dhcp_values.py (team-redbull/dhcp_scope_manager),
+which derives the same name from the cluster file's stem — change one, change both.
+
+An unresolvable name is a hard failure, not a silent skip: a skip is what the old
+scopeName-based gate did, and it hid the misconfiguration instead of reporting it.
+*/}}
+{{- define "dhcp.scopeName" -}}
+{{- $v := .Values.dhcp_values | default dict -}}
+{{- $name := $v.scopeName | default .Values.clusterName -}}
+{{- if not $name -}}
+{{- fail "dhcp_values.scopeName could not be resolved: pass the hosted cluster's name as clusterName (hcAppset.yaml does this with --set), or set dhcp_values.scopeName explicitly." -}}
+{{- end -}}
+{{- /* hcAppset trims the suffix; catch a misconfigured one here rather than letting
+       "cluster-a.yaml" become the literal scope name on the Windows server. */}}
+{{- if or (hasSuffix ".yaml" $name) (hasSuffix ".yml" $name) -}}
+{{- fail (printf "clusterName %q still carries a file suffix; hcAppset.yaml is meant to trim it. Left as-is this becomes the literal DHCP scope name on the Windows server." $name) -}}
+{{- end -}}
+{{- if gt (len $name) 256 -}}
+{{- fail (printf "scopeName %q is %d characters; the API allows at most 256." $name (len $name)) -}}
+{{- end -}}
+{{- $name -}}
+{{- end -}}
+
+{{/*
 The request body, as a JSON document.
 
 Emitted as JSON text rather than as a YAML mapping because provider-http types
@@ -59,10 +95,13 @@ one documented in CLAUDE.md section 5 and asserted in tests/test_helm.py.
 
 {{- $mask := $v.subnetMask | default "255.255.255.0" -}}
 
+{{- /* Defaults to the hosted cluster's own name when no values file sets it. */}}
+{{- $scopeName := include "dhcp.scopeName" . -}}
+
 {{- $useFailover := and (hasKey $v "failover") $v.failover -}}
 
 {
-  "scopeName": {{ $v.scopeName | toJson }},
+  "scopeName": {{ $scopeName | toJson }},
   "subnetMask": {{ $mask | toJson }},
   "startRange": {{ $v.startRange | toJson }},
   "endRange": {{ $v.endRange | toJson }},
@@ -83,10 +122,11 @@ one documented in CLAUDE.md section 5 and asserted in tests/test_helm.py.
        validator both keep the field required — they only ever see a resolved value.
 
        Windows caps a relationship name at 64 characters, so fail loudly rather than emit a
-       name the DHCP server will refuse; _CiFailover enforces the same bound in CI. */}}
-{{- $relationshipName := $f.relationshipName | default (printf "%s-failover" $v.scopeName) }}
+       name the DHCP server will refuse; _CiFailover enforces the same bound in CI. Note
+       $scopeName may itself be derived from the cluster name, which caps that at 55. */}}
+{{- $relationshipName := $f.relationshipName | default (printf "%s-failover" $scopeName) }}
 {{- if gt (len $relationshipName) 64 }}
-{{- fail (printf "failover.relationshipName %q is %d characters; Windows allows at most 64. Set dhcp_values.failover.relationshipName explicitly to something shorter." $relationshipName (len $relationshipName)) }}
+{{- fail (printf "failover.relationshipName %q is %d characters; Windows allows at most 64. The name derives from scopeName %q, which may itself come from the hosted cluster's name — shorten that, or set dhcp_values.failover.relationshipName explicitly." $relationshipName (len $relationshipName) $scopeName) }}
 {{- end }}
   "failover": {
     "partnerServer": {{ $f.partnerServer | toJson }},
