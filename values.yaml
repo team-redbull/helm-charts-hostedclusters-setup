@@ -69,13 +69,15 @@ dhcp_api:
   # DHCP_API_TOKEN is unset, and an empty ref here renders no Authorization
   # header at all — so this was `{}` while the API ran unauthenticated.
   #
-  # It is filled in now because the deploy chart generates that token
-  # unconditionally (helm-charts-dhcp-scope-manager templates/secret.yaml): the
-  # API requires a Bearer token from the moment that chart is deployed, and a
-  # Request with no Authorization header gets 401 on every reconcile. The default
-  # therefore tracks where that chart puts the Secret — release
-  # `dhcp-scope-manager` in its own namespace. provider-http's ClusterRole grants
-  # secrets/* cluster-wide, so reading it from crossplane-system needs no extra RBAC.
+  # It is filled in because the API requires a Bearer token from the moment the
+  # deploy chart is up, and a Request with no Authorization header gets 401 on
+  # every reconcile. The default tracks the OUT-OF-BAND `dhcp-scope-manager-token`
+  # Secret that redbull-platform pins via apiAuth.existingSecret — NOT the deploy
+  # chart's generated `<release>-api-token`: that generated Secret's
+  # lookup-then-generate is a no-op under Argo CD (`helm template` has no
+  # `lookup`), so every re-render ROTATED it, 401-ing all Requests here until the
+  # next coincidence realigned them. provider-http's ClusterRole grants secrets/*
+  # cluster-wide, so reading across namespaces needs no extra RBAC.
   #
   # All three keys are required: provider-http resolves them from the live Secret
   # at reconcile time and stores only the {{ name:namespace:key }} placeholder in
@@ -85,7 +87,7 @@ dhcp_api:
   #
   # Set `tokenSecretRef: null` to go back to unauthenticated requests.
   tokenSecretRef:
-    name: dhcp-scope-manager-api-token
+    name: dhcp-scope-manager-token
     namespace: dhcp-scope-manager
     key: api-token
 
