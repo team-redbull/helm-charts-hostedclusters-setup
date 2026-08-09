@@ -60,6 +60,41 @@ scopeName-based gate did, and it hid the misconfiguration instead of reporting i
 {{- end -}}
 
 {{/*
+The namespace the Request CR is created in.
+
+Only meaningful for the namespaced Request kind (http.m.crossplane.io, Crossplane v2's
+`.m.` API group). provider-http v1.0.14 ships *both* that and the legacy cluster-scoped
+http.crossplane.io/v1alpha2 — namespaced is the newer of the two, not an older one.
+
+Load-bearing twice over, which is why it resolves in one place: it is the CR's own
+namespace, and it is the default namespace for the Bearer-token Secret placeholder.
+provider-http parses `{{ name:namespace:key }}` with a regex requiring exactly three
+segments (internal/data-patcher/parser.go) and never passes the CR's own namespace in,
+so a placeholder cannot inherit it — the template has to write the same string into
+both. Deriving them from one helper is what stops them disagreeing.
+
+A placeholder that fails that regex is left in the header as literal text with no error
+raised, so a wrong namespace here surfaces as a 401 from the DHCP API rather than as
+anything naming the Secret.
+
+Empty is a hard failure rather than a rendered `hcp-`: clusterName defaults to "" in
+values.yaml, so the derived form silently produces a garbage namespace for any render
+that reaches here without the appset's --set.
+*/}}
+{{- define "dhcp.crNamespace" -}}
+{{- $ns := .Values.crossplane.namespace | default "" -}}
+{{- if not $ns -}}
+{{- if .Values.clusterName -}}
+{{- $ns = printf "hcp-%s" .Values.clusterName -}}
+{{- end -}}
+{{- end -}}
+{{- if not $ns -}}
+{{- fail "crossplane.namespace could not be resolved: pass the hosted cluster's name as clusterName (hcAppset.yaml does this with --set) to derive hcp-<cluster>, or set crossplane.namespace explicitly." -}}
+{{- end -}}
+{{- $ns -}}
+{{- end -}}
+
+{{/*
 The request body, as a JSON document.
 
 Emitted as JSON text rather than as a YAML mapping because provider-http types

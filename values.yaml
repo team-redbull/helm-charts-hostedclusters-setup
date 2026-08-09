@@ -27,25 +27,35 @@
 clusterName: ""
 
 crossplane:
-  # Namespace the Crossplane Request CR is created in. Empty means no namespace
-  # field is rendered at all, which is what a cluster-scoped Request needs.
-  # Confirm which kind you have with:
+  # Namespace the Request CR is created in. The chart renders the NAMESPACED Request
+  # kind (http.m.crossplane.io/v1alpha2, Crossplane v2's `.m.` group), so this field
+  # is always emitted — an object with no namespace would land in `default`.
   #
-  #   kubectl get crd requests.http.crossplane.io -o jsonpath='{.spec.scope}'
+  # provider-http v1.0.14 ships two separate Request CRDs; confirm both with:
   #
-  # `Cluster` (provider-http v1.0.14, and the default here): leave this empty.
-  # The API server drops a namespace on a cluster-scoped object, so Argo CD would
-  # compare a desired resource key carrying a namespace against a live one without
-  # it and the Application would never reach Synced.
+  #   kubectl get crd requests.http.crossplane.io   -o jsonpath='{.spec.scope}'  # Cluster
+  #   kubectl get crd requests.http.m.crossplane.io -o jsonpath='{.spec.scope}'  # Namespaced
   #
-  # `Namespaced` (older provider-http): set it — `crossplane-system` is the
-  # conventional home. hcAppset.yaml points the Application's destination at
-  # openshift-gitops, so Argo CD has to be permitted to write into whichever
-  # namespace this names.
-  namespace: ""
+  # No default here on purpose: dhcp.crNamespace derives `hcp-<clusterName>` when this
+  # is unset, and a value set in this file could not be unset downstream. Set it to
+  # pin every cluster's Request to one namespace instead.
+  #
+  # It also supplies the default namespace for the Bearer-token placeholder below, so
+  # a Secret sitting beside the Request needs no explicit ref. hcAppset.yaml points the
+  # Application's destination at openshift-gitops, so Argo CD's AppProject has to permit
+  # writes into whichever namespace this resolves to — a resource declaring a namespace
+  # outside the project's destinations is refused at sync time, and the error names the
+  # project rather than the namespace.
 
-  # Name of the Crossplane ProviderConfig holding the DHCP API connection.
+  # Name of the Crossplane provider config holding the DHCP API connection.
   # Installed by redbull-platform's provider-http chart.
+  #
+  # This must be an object in the `.m.` group — a namespaced Request cannot reference
+  # the legacy http.crossplane.io ProviderConfig of the same name. Kind is configurable
+  # because the group offers both: ClusterProviderConfig (cluster-wide, the default —
+  # one DHCP API serves the whole platform) and ProviderConfig (namespaced, which would
+  # need one per hosted-cluster namespace).
+  providerConfigKind: ClusterProviderConfig
   providerConfigName: dhcp-http
 
 # Where the DHCP scope API lives.

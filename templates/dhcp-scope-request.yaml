@@ -21,23 +21,36 @@
        normally makes it truthy for everyone, but not when the chart renders without the
        values repo. */}}
 {{- if and .Values.dhcp_values (hasKey .Values.dhcp_values "network") }}
-apiVersion: http.crossplane.io/v1alpha2
+{{- $ns := include "dhcp.crNamespace" . }}
+{{- /* The NAMESPACED Request kind, from Crossplane v2's `.m.` API group. provider-http
+       v1.0.14 ships two Request CRDs and they are separate resources, not two versions of
+       one: http.crossplane.io/v1alpha2 (spec.scope: Cluster) and this one
+       (spec.scope: Namespaced). Confirm with
+       `kubectl get crd requests.http.m.crossplane.io -o jsonpath='{.spec.scope}'`.
+       Namespaced is the newer of the two — the note this replaced had it backwards. */}}
+apiVersion: http.m.crossplane.io/v1alpha2
 kind: Request
 metadata:
   name: dhcp-scope-{{ required "dhcp_values.network is required" .Values.dhcp_values.network | replace "." "-" }}
-  {{- /* Emitted only when crossplane.namespace is set, and it is empty by default.
-         provider-http made Request a *cluster-scoped* CRD (spec.scope: Cluster — check with
-         `kubectl get crd requests.http.crossplane.io -o jsonpath='{.spec.scope}'`). The API
-         server drops a namespace on a cluster-scoped object, so Argo CD ends up comparing a
-         desired resource key that carries a namespace against a live one that does not, and
-         the Application never settles. Kept configurable rather than deleted because an
-         older provider-http, where Request was namespaced, still needs it. */}}
-  {{- with .Values.crossplane.namespace }}
-  namespace: {{ . }}
-  {{- end }}
+  {{- /* Always rendered now, and it must be: this kind is namespaced, so an object with no
+         namespace lands in `default` rather than being dropped. dhcp.crNamespace also feeds
+         the token placeholder below, so the CR and the Secret it reads cannot drift apart. */}}
+  namespace: {{ $ns }}
 spec:
-  deletionPolicy: Delete
+  {{- /* No deletionPolicy: the namespaced spec has no such field (its schema carries only
+         forProvider, managementPolicies, providerConfigRef, writeConnectionSecretToRef), and
+         a CRD prunes unknown fields silently — it would look set in git and be absent on the
+         server. Deletion behaviour comes from managementPolicies, which defaults to full
+         management, so a deleted CR still deletes the scope. */}}
   providerConfigRef:
+    {{- /* kind is REQUIRED on this group (the schema lists both kind and name as required),
+           because a namespaced Request can reference either a namespaced ProviderConfig in
+           its own namespace or a cluster-wide ClusterProviderConfig. ClusterProviderConfig by
+           default: there is one DHCP API for the whole platform, so one config shared by
+           every hosted cluster's namespace matches how the API is actually deployed.
+           NOTE this is a *different object* from the legacy http.crossplane.io ProviderConfig
+           — the `.m.` group cannot reference it, so one has to exist in the new group. */}}
+    kind: {{ .Values.crossplane.providerConfigKind | default "ClusterProviderConfig" }}
     name: {{ .Values.crossplane.providerConfigName | default "dhcp-http" }}
   forProvider:
     headers:
@@ -46,15 +59,22 @@ spec:
       Accept:
         - "application/json"
       {{- with .Values.dhcp_api.tokenSecretRef }}
-      {{- if and .name .namespace .key }}
+      {{- if and .name .key }}
       # provider-http resolves {{ "{{" }} name:namespace:key {{ "}}" }} against a live Secret at
       # reconcile time and sends the resolved value, while storing only the
       # placeholder in spec, status.requestDetails and its own logs — so the token
       # never lands in git or in the Argo CD UI. Placeholders work in headers and
       # body only. NOT secretInjectionConfigs: that runs the other direction,
       # extracting response fields *into* a Secret.
+      #
+      # namespace defaults to the CR's own namespace, so a Secret deployed alongside
+      # the Request needs no second copy of that name. It is NOT inherited from the
+      # CR at reconcile time — the parser's regex demands three literal segments and
+      # is never handed the CR's namespace — so the template writes it in. An
+      # explicit tokenSecretRef.namespace still wins, which is what the shared
+      # dhcp-scope-manager Secret in values.yaml relies on.
       Authorization:
-        - {{ printf "Bearer {{ %s:%s:%s }}" .name .namespace .key | quote }}
+        - {{ printf "Bearer {{ %s:%s:%s }}" .name (.namespace | default $ns) .key | quote }}
       {{- end }}
       {{- end }}
 

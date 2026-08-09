@@ -37,7 +37,12 @@ has never heard of git. The CR is the only thing they share: its
 `spec.forProvider.payload.body` is the *desired* state, and the API's GET response
 — stored back in `status.response` — is the *actual* state.
 
-`oc describe request dhcp-scope-<network-dashed> -n crossplane-system` shows both sides.
+`oc describe request dhcp-scope-<network-dashed> -n <crossplane.namespace>` shows both
+sides. The Request is the namespaced kind (`http.m.crossplane.io/v1alpha2`), so it lives
+in the namespace `crossplane.namespace` resolves to — `hcp-<clusterName>` by default, not
+`crossplane-system`. provider-http also ships a cluster-scoped `Request` in the legacy
+`http.crossplane.io` group; `oc get request` may resolve to either, so spell out the group
+(`oc get requests.http.m.crossplane.io -A`) when it matters.
 
 ## Values
 

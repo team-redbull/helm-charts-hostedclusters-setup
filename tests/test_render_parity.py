@@ -57,7 +57,13 @@ CANONICAL_BODY = {
 
 # subnetMask and gateway are deliberately absent — the chart derives them, and
 # that derivation is what the first test below is really checking.
+#
+# crossplane.namespace is set so dhcp.crNamespace resolves without a clusterName: the
+# Request is namespaced, so every render needs one, and setting clusterName here would
+# also resolve scopeName and defeat the derivation test below.
 _VALUES = textwrap.dedent("""\
+    crossplane:
+      namespace: test-ns
     dhcp_api:
       url: https://dhcp-api.lab.local
       tokenSecretRef: null
