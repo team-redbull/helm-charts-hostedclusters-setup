@@ -70,7 +70,20 @@ def _parse_cr(rendered: str) -> dict:
 # values.yaml ships it commented out, so nothing leaks in from the base layer.
 # failover: null and tokenSecretRef: null are still spelled out so the "no failover"
 # and "no token" cases stay explicit rather than relying on absence.
+#
+# crossplane.namespace is set rather than clusterName because the Request is namespaced
+# and dhcp.crNamespace has to resolve for *every* render. Setting clusterName here would
+# also silently satisfy dhcp.scopeName, which would leave the scopeName-derivation tests
+# below asserting against a fixture that already answered their question.
+
+# Prepended to the self-contained fixtures further down, which build their own values
+# rather than extending _VALID_VALUES. Those tests are about failover and token contents,
+# so the namespace is plumbing rather than anything they assert on.
+_CROSSPLANE_NS = "crossplane:\n  namespace: test-ns\n"
+
 _VALID_VALUES = textwrap.dedent("""\
+    crossplane:
+      namespace: test-ns
     dhcp_api:
       url: https://dhcp-api.lab.local
       tokenSecretRef: null
@@ -103,8 +116,16 @@ class TestHelmTemplateBasic:
         assert output.strip()
 
     def test_cr_has_correct_api_version(self):
+        """The `.m.` group — Crossplane v2's namespaced Request.
+
+        provider-http v1.0.14 ships two separate Request CRDs, not two versions of one:
+        http.crossplane.io/v1alpha2 is scope: Cluster, http.m.crossplane.io/v1alpha2 is
+        scope: Namespaced. Getting this wrong does not fail the render — it produces a CR
+        for a kind whose provider config lives in the other group, which then never
+        reconciles.
+        """
         cr = _parse_cr(_helm_template(_VALID_VALUES))
-        assert cr["apiVersion"] == "http.crossplane.io/v1alpha2"
+        assert cr["apiVersion"] == "http.m.crossplane.io/v1alpha2"
 
     def test_cr_kind_is_request(self):
         cr = _parse_cr(_helm_template(_VALID_VALUES))
@@ -115,21 +136,61 @@ class TestHelmTemplateBasic:
         cr = _parse_cr(_helm_template(_VALID_VALUES))
         assert cr["metadata"]["name"] == "dhcp-scope-10-20-30-0"
 
-    def test_cr_carries_no_namespace_by_default(self):
-        """Request is cluster-scoped in provider-http v1.0.14.
+    def test_cr_namespace_is_always_rendered(self):
+        """The kind is namespaced, so an object without one lands in `default`.
 
-        The API server drops a namespace on a cluster-scoped object, so a rendered
-        one leaves Argo CD comparing a desired resource key that has a namespace
-        against a live one that does not — the Application never reaches Synced.
+        This inverts the old assertion: the cluster-scoped kind had to render no
+        namespace at all, because the API server dropped it and left Argo CD comparing
+        a desired key carrying one against a live key without it.
         """
         cr = _parse_cr(_helm_template(_VALID_VALUES))
-        assert "namespace" not in cr["metadata"]
+        assert cr["metadata"]["namespace"] == "test-ns"
 
-    def test_cr_namespace_is_rendered_when_set(self):
-        """Still settable for an older provider-http, where Request was namespaced."""
-        values = _VALID_VALUES + "crossplane:\n  namespace: crossplane-system\n"
-        cr = _parse_cr(_helm_template(values))
+    def test_cr_namespace_derives_from_the_cluster_name(self):
+        """Cleared, the namespace is hcp-<clusterName> — what the air-gapped copy uses.
+
+        Cleared rather than omitted: this copy's values.yaml pins the environment's
+        namespace, and that is the base of every merge, so leaving the key out inherits
+        it instead of deriving. The air-gapped chart drops the key outright and reaches
+        this path with nothing to override.
+        """
+        values = _VALID_VALUES.replace(_CROSSPLANE_NS, "crossplane:\n  namespace: ~\n")
+        cr = _parse_cr(_helm_template(values, _cluster_name("cluster-a")))
+        assert cr["metadata"]["namespace"] == "hcp-cluster-a"
+
+    def test_derived_namespace_is_shared_by_the_token_secret(self):
+        """One variable feeds the CR's namespace and the token placeholder.
+
+        The Secret is meant to sit beside the Request, so naming it twice could only
+        create two things to keep in step. This is the air-gapped shape: each hosted
+        cluster's token lives in the same hcp-<clusterName> namespace as its Request.
+        """
+        values = (
+            _VALID_VALUES.replace(_CROSSPLANE_NS, "crossplane:\n  namespace: ~\n")
+            .replace("  tokenSecretRef: null\n", "")
+        )
+        cr = _parse_cr(_helm_template(values, _cluster_name("cluster-a")))
+        header = cr["spec"]["forProvider"]["headers"]["Authorization"][0]
+        assert cr["metadata"]["namespace"] == "hcp-cluster-a"
+        assert ":hcp-cluster-a:" in header
+
+    def test_cr_namespace_explicit_beats_the_derived_one(self):
+        values = _VALID_VALUES.replace(
+            _CROSSPLANE_NS, "crossplane:\n  namespace: crossplane-system\n"
+        )
+        cr = _parse_cr(_helm_template(values, _cluster_name("cluster-a")))
         assert cr["metadata"]["namespace"] == "crossplane-system"
+
+    def test_unresolvable_namespace_fails_the_render(self):
+        """Neither source set is a hard failure, not a rendered `hcp-`.
+
+        clusterName defaults to "" in values.yaml, so the derived form would otherwise
+        produce a garbage namespace for any render that skipped the appset's --set. Both
+        cleared is what the air-gapped chart looks like with a missing clusterName.
+        """
+        values = _VALID_VALUES.replace(_CROSSPLANE_NS, "crossplane:\n  namespace: ~\n")
+        stderr = _helm_template_fails(values)
+        assert "crossplane.namespace could not be resolved" in stderr
 
     def test_provider_config_name_defaults_to_dhcp_http(self):
         cr = _parse_cr(_helm_template(_VALID_VALUES))
@@ -146,9 +207,39 @@ class TestHelmTemplateBasic:
         base_url = cr["spec"]["forProvider"]["payload"]["baseUrl"]
         assert base_url.endswith("/api/v1/scopes/10.20.30.0")
 
-    def test_deletion_policy_is_delete(self):
+    def test_management_policies_is_full_management(self):
+        """"*" is every action, and full management is what makes a deleted CR delete
+        the scope — the behaviour the GitOps flow depends on.
+
+        Written out rather than left to the CRD's default so a future default change
+        cannot silently strip Delete and leave orphaned scopes on the Windows server
+        with nothing in git recording the intent.
+        """
         cr = _parse_cr(_helm_template(_VALID_VALUES))
-        assert cr["spec"]["deletionPolicy"] == "Delete"
+        assert cr["spec"]["managementPolicies"] == ["*"]
+
+    def test_no_deletion_policy_is_rendered(self):
+        """The namespaced spec has no deletionPolicy field.
+
+        Its schema carries only forProvider, managementPolicies, providerConfigRef and
+        writeConnectionSecretToRef. A CRD prunes unknown fields silently, so rendering
+        one would look set in git and be absent on the server — worse than not setting
+        it, because it reads as a deliberate choice that is not in force. Deletion
+        behaviour comes from managementPolicies, which defaults to full management.
+        """
+        cr = _parse_cr(_helm_template(_VALID_VALUES))
+        assert "deletionPolicy" not in cr["spec"]
+
+    def test_provider_config_ref_carries_a_kind(self):
+        """kind is required on the `.m.` group — the render is invalid without it.
+
+        A namespaced Request may reference either a namespaced ProviderConfig in its own
+        namespace or a cluster-wide ClusterProviderConfig, so the reference has to say
+        which. Both are distinct from the legacy http.crossplane.io ProviderConfig of the
+        same name, which this kind cannot reference at all.
+        """
+        cr = _parse_cr(_helm_template(_VALID_VALUES))
+        assert cr["spec"]["providerConfigRef"]["kind"] == "ClusterProviderConfig"
 
 
 class TestScopeNameDerivation:
@@ -249,7 +340,7 @@ class TestDhcpOptOutGate:
     def test_inherited_globals_without_network_render_nothing(self):
         """sites/configValues.yaml gives every cluster a dhcp_values block, so
         inheriting one is not opting in. Only the cluster's own network is."""
-        values = textwrap.dedent("""\
+        values = _CROSSPLANE_NS + textwrap.dedent("""\
             dhcp_api:
               url: https://dhcp-api.lab.local
             dhcp_values:
@@ -285,7 +376,7 @@ class TestHelmRequiredFields:
         absent key means "no scope wanted", an empty one means a malformed scope, and
         collapsing the two would let this typo disappear silently.
         """
-        values = textwrap.dedent("""\
+        values = _CROSSPLANE_NS + textwrap.dedent("""\
             dhcp_api:
               url: https://dhcp-api.lab.local
             dhcp_values:
@@ -310,7 +401,7 @@ class TestHelmRequiredFields:
         The chart has a default url in values.yaml, so merely omitting the key
         uses that default.  Explicitly setting url: "" triggers the `required` guard.
         """
-        values = textwrap.dedent("""\
+        values = _CROSSPLANE_NS + textwrap.dedent("""\
             dhcp_api:
               url: ""
             dhcp_values:
@@ -364,7 +455,7 @@ class TestHelmPayloadBody:
 
     def test_description_defaults_to_empty_string_not_null(self):
         """description must be "" not null — otherwise Crossplane sees a mismatch."""
-        values = textwrap.dedent("""\
+        values = _CROSSPLANE_NS + textwrap.dedent("""\
             dhcp_api:
               url: https://dhcp-api.lab.local
             dhcp_values:
@@ -456,6 +547,100 @@ class TestHelmPayloadBody:
         assert body["subnetMask"] == "255.255.0.0"
         assert body["gateway"] == "10.20.0.1"
 
+    _NO_RANGE = (
+        _VALID_VALUES
+        .replace('  startRange: "10.20.30.100"\n', "")
+        .replace('  endRange: "10.20.30.200"\n', "")
+    )
+
+    def test_range_omitted_renders_derived_bounds(self):
+        """Both bounds omitted derives the subnet's .1 – .253.
+
+        Resolved at render time for the same reason as gateway, plus one of its own:
+        the containment check ignores fields the body does not carry, so a body that
+        omitted the range would never notice a range that drifted on the server.
+        """
+        body = self._body(self._NO_RANGE)
+        assert body["startRange"] == "10.20.30.1"
+        assert body["endRange"] == "10.20.30.253"
+
+    def test_derived_range_stops_short_of_the_derived_gateway(self):
+        """.253 and .254 — the two derivations have to coexist in one rendered body.
+
+        A range ending at .254 would put the derived gateway inside the pool, and the
+        API would 422 the very body this default exists to produce.
+        """
+        values = self._NO_RANGE.replace('  gateway: "10.20.30.1"\n', "")
+        body = self._body(values)
+        assert body["endRange"] == "10.20.30.253"
+        assert body["gateway"] == "10.20.30.254"
+
+    def test_derived_range_tracks_the_network(self):
+        values = (
+            self._NO_RANGE
+            .replace('  network: "10.20.30.0"', '  network: "192.168.7.0"')
+            .replace('  gateway: "10.20.30.1"', '  gateway: "192.168.7.1"')
+        )
+        body = self._body(values)
+        assert body["startRange"] == "192.168.7.1"
+        assert body["endRange"] == "192.168.7.253"
+
+    def test_explicit_range_is_passed_through(self):
+        body = self._body(_VALID_VALUES)
+        assert body["startRange"] == "10.20.30.100"
+        assert body["endRange"] == "10.20.30.200"
+
+    def test_half_a_range_fails_the_render(self):
+        """One bound alone is refused here, not silently completed downstream."""
+        values = self._NO_RANGE.replace(
+            "  leaseDurationDays: 8",
+            '  startRange: "10.20.30.100"\n  leaseDurationDays: 8',
+        )
+        stderr = _helm_template_fails(values)
+        assert "dhcp_values.endRange is required when dhcp_values.startRange is set" in stderr
+
+    def test_non_24_mask_without_range_fails_render(self):
+        """The .1–.253 convention holds for a /24 only — fail rather than guess."""
+        values = (
+            self._NO_RANGE
+            .replace('  subnetMask: "255.255.255.0"', '  subnetMask: "255.255.0.0"')
+            .replace('  network: "10.20.30.0"', '  network: "10.20.0.0"')
+            .replace('  gateway: "10.20.30.1"', '  gateway: "10.20.0.1"')
+        )
+        stderr = _helm_template_fails(values)
+        assert (
+            "dhcp_values.startRange and dhcp_values.endRange are required when "
+            "subnetMask is 255.255.0.0"
+        ) in stderr
+
+    def test_a_values_file_carrying_only_a_network_renders_completely(self):
+        """The day-1 shape: network, lease and DNS — everything else derived.
+
+        This is what the range default is for. If this render ever needs another key
+        back, the default has stopped doing its job.
+        """
+        values = textwrap.dedent("""\
+            crossplane:
+              namespace: test-ns
+            dhcp_api:
+              url: https://dhcp-api.lab.local
+              tokenSecretRef: null
+            dhcp_values:
+              network: "10.20.30.0"
+              leaseDurationDays: 8
+              dns:
+                servers:
+                  - "10.0.0.53"
+              failover: null
+        """)
+        cr = _parse_cr(_helm_template(values, _cluster_name("cluster-a")))
+        body = json.loads(cr["spec"]["forProvider"]["payload"]["body"])
+        assert body["scopeName"] == "cluster-a"
+        assert body["subnetMask"] == "255.255.255.0"
+        assert body["startRange"] == "10.20.30.1"
+        assert body["endRange"] == "10.20.30.253"
+        assert body["gateway"] == "10.20.30.254"
+
     def test_gateway_null_renders_null(self):
         values = _VALID_VALUES.replace('  gateway: "10.20.30.1"', "  gateway: null")
         body = self._body(values)
@@ -528,7 +713,8 @@ def _values_with_failover(**failover_fields) -> str:
     """
     fo_lines = "\n".join(f"    {k}: {_yaml_value(v)}" for k, v in failover_fields.items())
     return (
-        "dhcp_api:\n"
+        _CROSSPLANE_NS
+        + "dhcp_api:\n"
         "  url: https://dhcp-api.lab.local\n"
         "  tokenSecretRef: null\n"
         "dhcp_values:\n"
@@ -672,12 +858,15 @@ class TestHelmSecretInjection:
     """
 
     def test_secret_injection_not_rendered_without_all_fields(self):
-        """tokenSecretRef block requires name, namespace, AND key — partial config → omit.
+        """tokenSecretRef requires name, namespace AND key — partial config → omit.
 
-        A half-configured ref would render a placeholder provider-http cannot
-        resolve, so the header is dropped entirely instead.
+        A half-configured ref would render a placeholder provider-http cannot parse.
+        That is not a loud failure: its regex demands three segments and a non-matching
+        placeholder is left in the header as literal text with no error raised, so the
+        request goes out with `Bearer {{ ... }}` and earns a 401 that names nothing.
+        The header is dropped entirely instead.
         """
-        values = textwrap.dedent("""\
+        values = _CROSSPLANE_NS + textwrap.dedent("""\
             dhcp_api:
               url: https://dhcp-api.lab.local
               tokenSecretRef:
@@ -701,8 +890,41 @@ class TestHelmSecretInjection:
         cr = _parse_cr(_helm_template(values))
         assert "Authorization" not in cr["spec"]["forProvider"]["headers"]
 
+    def test_token_namespace_defaults_to_the_cr_namespace(self):
+        """The Secret sits beside the Request, so one variable answers for both.
+
+        It is NOT inherited at reconcile time — provider-http's regex demands three
+        literal segments and is never handed the CR's own namespace — so the template
+        writes the same string into both. That is what stops them drifting apart.
+        """
+        values = _CROSSPLANE_NS + textwrap.dedent("""\
+            dhcp_api:
+              url: https://dhcp-api.lab.local
+              tokenSecretRef:
+                name: dhcp-api-token
+                namespace: ~
+                key: api-token
+            dhcp_values:
+              scopeName: "test-scope"
+              network: "10.20.30.0"
+              subnetMask: "255.255.255.0"
+              startRange: "10.20.30.100"
+              endRange: "10.20.30.200"
+              leaseDurationDays: 8
+              gateway: "10.20.30.1"
+              dns:
+                servers: ["10.0.0.53"]
+                domain: "lab.local"
+              exclusions: []
+              failover: null
+        """)
+        cr = _parse_cr(_helm_template(values))
+        header = cr["spec"]["forProvider"]["headers"]["Authorization"][0]
+        assert header == "Bearer {{ dhcp-api-token:test-ns:api-token }}"
+        assert cr["metadata"]["namespace"] == "test-ns"
+
     def test_secret_injection_rendered_with_all_three_fields(self):
-        values = textwrap.dedent("""\
+        values = _CROSSPLANE_NS + textwrap.dedent("""\
             dhcp_api:
               url: https://dhcp-api.lab.local
               tokenSecretRef:
@@ -737,7 +959,7 @@ class TestHelmSecretInjection:
 
     def test_token_never_appears_verbatim_in_rendered_output(self):
         """Only the placeholder is rendered — the chart never reads Secret contents."""
-        values = textwrap.dedent("""\
+        values = _CROSSPLANE_NS + textwrap.dedent("""\
             dhcp_api:
               url: https://dhcp-api.lab.local
               tokenSecretRef:
@@ -761,10 +983,14 @@ class TestHelmSecretInjection:
         assert "{{ dhcp-api-token:crossplane-system:token }}" in rendered
 
     def test_custom_provider_config_name(self):
+        # namespace goes inside this fixture's own crossplane block rather than via
+        # _CROSSPLANE_NS: two `crossplane:` keys in one YAML document is a duplicate
+        # key, and the later block silently replaces the first.
         values = textwrap.dedent("""\
             dhcp_api:
               url: https://dhcp-api.lab.local
             crossplane:
+              namespace: test-ns
               providerConfigName: my-custom-provider
             dhcp_values:
               scopeName: "test-scope"

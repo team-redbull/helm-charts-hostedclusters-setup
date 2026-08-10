@@ -37,7 +37,12 @@ has never heard of git. The CR is the only thing they share: its
 `spec.forProvider.payload.body` is the *desired* state, and the API's GET response
 — stored back in `status.response` — is the *actual* state.
 
-`oc describe request dhcp-scope-<network-dashed> -n crossplane-system` shows both sides.
+`oc describe request dhcp-scope-<network-dashed> -n <crossplane.namespace>` shows both
+sides. The Request is the namespaced kind (`http.m.crossplane.io/v1alpha2`), so it lives
+in the namespace `crossplane.namespace` resolves to — `hcp-<clusterName>` by default, not
+`crossplane-system`. provider-http also ships a cluster-scoped `Request` in the legacy
+`http.crossplane.io` group; `oc get request` may resolve to either, so spell out the group
+(`oc get requests.http.m.crossplane.io -A`) when it matters.
 
 ## Values
 
@@ -95,14 +100,16 @@ global `partnerServer` / `mode` / `serverRole` as you would expect.
 
 ### Derived defaults
 
-Three fields may be omitted and are resolved to a concrete value **at render time**,
+These fields may be omitted and are resolved to a concrete value **at render time**,
 never left for the API to fill in — provider-http compares the GET response against
-this body, and GET always reports concrete values:
+this body, and GET always reports concrete values. A field this body omits is not
+compared at all, so leaving one to the API would also mean never detecting drift in it:
 
 | Field | Derived as | Notes |
 |---|---|---|
 | `subnetMask` | `255.255.255.0` | |
 | `gateway` | the subnet's `.254` | Only derivable for a /24; any other mask without an explicit gateway fails the render. `gateway: ""` means no option 3 and is honoured as written. |
+| `startRange` + `endRange` | the subnet's `.1` – `.253` | Derived as a **pair** — one bound without the other fails the render. `.253` keeps the range clear of the derived `.254` gateway, which the API would otherwise reject as a gateway inside the leasable pool. /24 only, like `gateway`. Exclusions carve holes inside the range; they do not move its bounds. |
 | `failover.relationshipName` | `<scopeName>-failover` | Windows caps it at 64 characters; a longer derived name fails the render rather than being truncated. |
 
 ## Templates and tests
