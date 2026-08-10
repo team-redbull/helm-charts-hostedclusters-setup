@@ -147,10 +147,32 @@ class TestHelmTemplateBasic:
         assert cr["metadata"]["namespace"] == "test-ns"
 
     def test_cr_namespace_derives_from_the_cluster_name(self):
-        """With nothing set, the namespace is hcp-<clusterName>."""
-        values = _VALID_VALUES.replace(_CROSSPLANE_NS, "")
+        """Cleared, the namespace is hcp-<clusterName> — what the air-gapped copy uses.
+
+        Cleared rather than omitted: this copy's values.yaml pins the environment's
+        namespace, and that is the base of every merge, so leaving the key out inherits
+        it instead of deriving. The air-gapped chart drops the key outright and reaches
+        this path with nothing to override.
+        """
+        values = _VALID_VALUES.replace(_CROSSPLANE_NS, "crossplane:\n  namespace: ~\n")
         cr = _parse_cr(_helm_template(values, _cluster_name("cluster-a")))
         assert cr["metadata"]["namespace"] == "hcp-cluster-a"
+
+    def test_derived_namespace_is_shared_by_the_token_secret(self):
+        """One variable feeds the CR's namespace and the token placeholder.
+
+        The Secret is meant to sit beside the Request, so naming it twice could only
+        create two things to keep in step. This is the air-gapped shape: each hosted
+        cluster's token lives in the same hcp-<clusterName> namespace as its Request.
+        """
+        values = (
+            _VALID_VALUES.replace(_CROSSPLANE_NS, "crossplane:\n  namespace: ~\n")
+            .replace("  tokenSecretRef: null\n", "")
+        )
+        cr = _parse_cr(_helm_template(values, _cluster_name("cluster-a")))
+        header = cr["spec"]["forProvider"]["headers"]["Authorization"][0]
+        assert cr["metadata"]["namespace"] == "hcp-cluster-a"
+        assert ":hcp-cluster-a:" in header
 
     def test_cr_namespace_explicit_beats_the_derived_one(self):
         values = _VALID_VALUES.replace(
@@ -163,9 +185,10 @@ class TestHelmTemplateBasic:
         """Neither source set is a hard failure, not a rendered `hcp-`.
 
         clusterName defaults to "" in values.yaml, so the derived form would otherwise
-        produce a garbage namespace for any render that skipped the appset's --set.
+        produce a garbage namespace for any render that skipped the appset's --set. Both
+        cleared is what the air-gapped chart looks like with a missing clusterName.
         """
-        values = _VALID_VALUES.replace(_CROSSPLANE_NS, "")
+        values = _VALID_VALUES.replace(_CROSSPLANE_NS, "crossplane:\n  namespace: ~\n")
         stderr = _helm_template_fails(values)
         assert "crossplane.namespace could not be resolved" in stderr
 
@@ -183,6 +206,17 @@ class TestHelmTemplateBasic:
         cr = _parse_cr(_helm_template(_VALID_VALUES))
         base_url = cr["spec"]["forProvider"]["payload"]["baseUrl"]
         assert base_url.endswith("/api/v1/scopes/10.20.30.0")
+
+    def test_management_policies_is_full_management(self):
+        """"*" is every action, and full management is what makes a deleted CR delete
+        the scope — the behaviour the GitOps flow depends on.
+
+        Written out rather than left to the CRD's default so a future default change
+        cannot silently strip Delete and leave orphaned scopes on the Windows server
+        with nothing in git recording the intent.
+        """
+        cr = _parse_cr(_helm_template(_VALID_VALUES))
+        assert cr["spec"]["managementPolicies"] == ["*"]
 
     def test_no_deletion_policy_is_rendered(self):
         """The namespaced spec has no deletionPolicy field.
@@ -823,14 +857,14 @@ class TestHelmSecretInjection:
     fields from the HTTP *response* into a Secret.
     """
 
-    def test_secret_injection_not_rendered_without_name_and_key(self):
-        """tokenSecretRef requires name AND key — namespace is the one that derives.
+    def test_secret_injection_not_rendered_without_all_fields(self):
+        """tokenSecretRef requires name, namespace AND key — partial config → omit.
 
-        A ref missing either of those would render a placeholder provider-http cannot
-        parse. That is not a loud failure: its regex demands three segments and a
-        non-matching placeholder is left in the header as literal text with no error,
-        so the request goes out with `Bearer {{ ... }}` and earns a 401 that names
-        nothing. The header is dropped entirely instead.
+        A half-configured ref would render a placeholder provider-http cannot parse.
+        That is not a loud failure: its regex demands three segments and a non-matching
+        placeholder is left in the header as literal text with no error raised, so the
+        request goes out with `Bearer {{ ... }}` and earns a 401 that names nothing.
+        The header is dropped entirely instead.
         """
         values = _CROSSPLANE_NS + textwrap.dedent("""\
             dhcp_api:
@@ -856,19 +890,12 @@ class TestHelmSecretInjection:
         cr = _parse_cr(_helm_template(values))
         assert "Authorization" not in cr["spec"]["forProvider"]["headers"]
 
-    def test_null_token_namespace_derives_the_cr_namespace(self):
-        """A Secret sitting beside the Request needs no explicit namespace.
+    def test_token_namespace_defaults_to_the_cr_namespace(self):
+        """The Secret sits beside the Request, so one variable answers for both.
 
         It is NOT inherited at reconcile time — provider-http's regex demands three
         literal segments and is never handed the CR's own namespace — so the template
-        has to write the same string into both. That is the whole reason the CR
-        namespace and this default come from one helper.
-
-        Spelled `null` rather than omitted because the chart's own values.yaml pins
-        tokenSecretRef.namespace to dhcp-scope-manager, and Helm deep-merges mappings:
-        simply leaving the key out inherits that base value instead of deriving. Null is
-        how a caller opts into the derived namespace — the same distinction failover
-        draws between `null` and `{}`.
+        writes the same string into both. That is what stops them drifting apart.
         """
         values = _CROSSPLANE_NS + textwrap.dedent("""\
             dhcp_api:

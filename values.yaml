@@ -36,16 +36,26 @@ crossplane:
   #   kubectl get crd requests.http.crossplane.io   -o jsonpath='{.spec.scope}'  # Cluster
   #   kubectl get crd requests.http.m.crossplane.io -o jsonpath='{.spec.scope}'  # Namespaced
   #
-  # No default here on purpose: dhcp.crNamespace derives `hcp-<clusterName>` when this
-  # is unset, and a value set in this file could not be unset downstream. Set it to
-  # pin every cluster's Request to one namespace instead.
+  # It is ALSO the namespace of the Bearer-token Secret below, which carries no
+  # namespace of its own. One variable for both, because the Secret is meant to live
+  # beside the Request — so the two cannot drift into naming different namespaces, and
+  # only one of them has to be decided per environment.
   #
-  # It also supplies the default namespace for the Bearer-token placeholder below, so
-  # a Secret sitting beside the Request needs no explicit ref. hcAppset.yaml points the
-  # Application's destination at openshift-gitops, so Argo CD's AppProject has to permit
-  # writes into whichever namespace this resolves to — a resource declaring a namespace
-  # outside the project's destinations is refused at sync time, and the error names the
-  # project rather than the namespace.
+  # Unset, dhcp.crNamespace derives `hcp-<clusterName>`. That is what the AIR-GAPPED
+  # copy of this chart uses: there the Request sits beside its hosted control plane and
+  # each cluster carries its own token Secret in its own namespace.
+  #
+  # This copy pins dhcp-scope-manager, which is where the shared token Secret already
+  # lives, so the derived and the actual namespace agree without a second key. The
+  # cluster has no hcp-* namespaces, so the derivation would name nothing that exists.
+  # Set here rather than in the ApplicationSet because it is a property of this
+  # environment's chart copy, not of how Applications are generated.
+  #
+  # hcAppset.yaml points the Application's destination at openshift-gitops, so Argo CD's
+  # AppProject has to permit writes into whichever namespace this resolves to — a
+  # resource declaring a namespace outside the project's destinations is refused at sync
+  # time, and the error names the project rather than the namespace.
+  namespace: dhcp-scope-manager
 
   # Name of the Crossplane provider config holding the DHCP API connection.
   # Installed by redbull-platform's provider-http chart.
@@ -91,14 +101,34 @@ dhcp_api:
   #
   # All three keys are required: provider-http resolves them from the live Secret
   # at reconcile time and stores only the {{ name:namespace:key }} placeholder in
-  # the CR's spec and logs, so the token never reaches git or the Argo CD UI. A
-  # partially-filled ref renders no header rather than an unresolvable placeholder
-  # sent as literal text.
+  # the CR's spec and logs, so the token never reaches git or the Argo CD UI.
+  #
+  # `namespace` is absent on purpose — it defaults to crossplane.namespace above, the
+  # Request's own. The Secret is meant to sit beside the CR, so naming it twice could
+  # only ever create two things to keep in step. In the air-gapped environment that
+  # resolves to hcp-<clusterName>, giving each hosted cluster its own token beside its
+  # own Request; here both land in dhcp-scope-manager.
+  #
+  # Set it explicitly only for a Secret that genuinely lives somewhere else — an
+  # explicit value still wins.
+  #
+  # name and key DO default: they are the same object in every environment, and
+  # they track the OUT-OF-BAND `dhcp-scope-manager-token` Secret that
+  # redbull-platform pins via apiAuth.existingSecret — NOT the deploy chart's
+  # generated `<release>-api-token`: that generated Secret's lookup-then-generate
+  # is a no-op under Argo CD (`helm template` has no `lookup`), so every re-render
+  # ROTATED it, 401-ing all Requests here until the next coincidence realigned
+  # them. provider-http's ClusterRole grants secrets/* cluster-wide, so reading
+  # across namespaces needs no extra RBAC.
+  #
+  # A ref missing name or key renders no Authorization header at all, rather than a
+  # placeholder provider-http cannot parse — an unparseable one is passed through as
+  # literal text with no error raised, which is a 401 on every reconcile that names
+  # nothing. The namespace cannot go missing, since it falls back to the Request's.
   #
   # Set `tokenSecretRef: null` to go back to unauthenticated requests.
   tokenSecretRef:
     name: dhcp-scope-manager-token
-    namespace: dhcp-scope-manager
     key: api-token
 
 # dhcp_values is NOT set here on purpose.

@@ -37,11 +37,19 @@ metadata:
          the token placeholder below, so the CR and the Secret it reads cannot drift apart. */}}
   namespace: {{ $ns }}
 spec:
-  {{- /* No deletionPolicy: the namespaced spec has no such field (its schema carries only
-         forProvider, managementPolicies, providerConfigRef, writeConnectionSecretToRef), and
-         a CRD prunes unknown fields silently — it would look set in git and be absent on the
-         server. Deletion behaviour comes from managementPolicies, which defaults to full
-         management, so a deleted CR still deletes the scope. */}}
+  {{- /* managementPolicies replaces deletionPolicy, which does not exist on this kind: the
+         namespaced spec carries only forProvider, managementPolicies, providerConfigRef and
+         writeConnectionSecretToRef, and a CRD prunes unknown fields silently — a rendered
+         deletionPolicy would look set in git while being absent on the server.
+
+         "*" is every action (Observe, Create, Update, Delete, LateInitialize) and is also
+         the CRD's own default, so this is written out rather than relied upon: full
+         management is what makes a deleted CR delete the scope, and that is the behaviour
+         the GitOps flow in CLAUDE.md section 9 depends on. Left implicit, a future default
+         change would silently strip Delete and leave orphaned scopes behind on the Windows
+         server with nothing in git recording that it was ever meant to be otherwise. */}}
+  managementPolicies:
+    - "*"
   providerConfigRef:
     {{- /* kind is REQUIRED on this group (the schema lists both kind and name as required),
            because a namespaced Request can reference either a namespaced ProviderConfig in
@@ -67,12 +75,18 @@ spec:
       # body only. NOT secretInjectionConfigs: that runs the other direction,
       # extracting response fields *into* a Secret.
       #
-      # namespace defaults to the CR's own namespace, so a Secret deployed alongside
-      # the Request needs no second copy of that name. It is NOT inherited from the
-      # CR at reconcile time — the parser's regex demands three literal segments and
-      # is never handed the CR's namespace — so the template writes it in. An
-      # explicit tokenSecretRef.namespace still wins, which is what the shared
-      # dhcp-scope-manager Secret in values.yaml relies on.
+      # The namespace is $ns — the Request's own. The Secret lives beside the CR, so
+      # one variable answers for both and they cannot drift apart. In the air-gapped
+      # environment that resolves to hcp-<clusterName>, giving each hosted cluster its
+      # own token next to its own Request; here it names an existing namespace.
+      #
+      # It has to be written in rather than inherited: provider-http's regex demands
+      # three literal segments and is never handed the CR's namespace, and a
+      # placeholder it cannot parse is left in the header as literal text with no error
+      # raised — surfacing as a 401 that names nothing.
+      #
+      # An explicit tokenSecretRef.namespace still overrides, for a Secret that really
+      # does live somewhere else.
       Authorization:
         - {{ printf "Bearer {{ %s:%s:%s }}" .name (.namespace | default $ns) .key | quote }}
       {{- end }}
