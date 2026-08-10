@@ -242,6 +242,44 @@ class TestHelmTemplateBasic:
         assert cr["spec"]["providerConfigRef"]["kind"] == "ClusterProviderConfig"
 
 
+class TestTlsVerification:
+    """insecureSkipTLSVerify — the field that makes an https dhcp_api.url reachable.
+
+    provider-http verifies the certificate by default, and an OpenShift Route is
+    signed by the cluster's own ingress CA, which the provider does not trust: every
+    reconcile then fails with "x509: certificate signed by unknown authority" before
+    the request is sent, so the scope is never created.
+    """
+
+    def test_rendered_true_by_default(self):
+        cr = _parse_cr(_helm_template(_VALID_VALUES))
+        assert cr["spec"]["forProvider"]["insecureSkipTLSVerify"] is True
+
+    def test_explicit_false_is_honoured(self):
+        """The load-bearing case. `| default true` would render this as true, since
+        sprig's default treats false as empty — the field could then never be turned
+        back on once the provider trusts the CA."""
+        values = _VALID_VALUES.replace(
+            "  url: https://dhcp-api.lab.local",
+            "  url: https://dhcp-api.lab.local\n  insecureSkipTLSVerify: false",
+        )
+        cr = _parse_cr(_helm_template(values))
+        assert cr["spec"]["forProvider"]["insecureSkipTLSVerify"] is False
+
+    def test_a_values_file_missing_the_key_still_renders_a_boolean(self):
+        """The air-gapped copy is a manual sync, so its values.yaml can lag the
+        template. A bare lookup would render `null` there, which the CRD's
+        `type: boolean` rejects at apply time rather than at render time."""
+        # `=null` is how Helm deletes a key from the merged values, so this renders
+        # the chart as if its own values.yaml never carried the key.
+        cr = _parse_cr(
+            _helm_template(
+                _VALID_VALUES, ["--set", "dhcp_api.insecureSkipTLSVerify=null"]
+            )
+        )
+        assert cr["spec"]["forProvider"]["insecureSkipTLSVerify"] is True
+
+
 class TestScopeNameDerivation:
     """scopeName defaults to the hosted cluster's own name.
 

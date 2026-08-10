@@ -22,6 +22,11 @@
        values repo. */}}
 {{- if and .Values.dhcp_values (hasKey .Values.dhcp_values "network") }}
 {{- $ns := include "dhcp.crNamespace" . }}
+{{- /* default dict so a chart copy whose values.yaml lost dhcp_api still fails on the
+       `required "dhcp_api.url is required"` below, which names the missing key, rather
+       than on a nil dereference in the TLS line — and so the hasKey there is handed a
+       map either way. */}}
+{{- $api := .Values.dhcp_api | default dict }}
 {{- /* The NAMESPACED Request kind, from Crossplane v2's `.m.` API group. provider-http
        v1.0.14 ships two Request CRDs and they are separate resources, not two versions of
        one: http.crossplane.io/v1alpha2 (spec.scope: Cluster) and this one
@@ -61,6 +66,27 @@ spec:
     kind: {{ .Values.crossplane.providerConfigKind | default "ClusterProviderConfig" }}
     name: {{ .Values.crossplane.providerConfigName | default "dhcp-http" }}
   forProvider:
+    {{- /* provider-http verifies the API's TLS certificate on every request it makes.
+           Against an https dhcp_api.url that is an OpenShift Route, that fails with
+           "x509: certificate signed by unknown authority" — the ingress certificate is
+           signed by the cluster's own CA, which the provider pod has no reason to trust.
+           Nothing recovers on retry: the request never leaves the provider, so the scope
+           is never created and the Request stays unready with the x509 error in status.
+
+           Default true, i.e. skip verification. It costs nothing in this chart copy,
+           whose url is plain http to an in-cluster Service (no TLS to verify at all),
+           and it is what makes the air-gapped copy work at all, where the API is reached
+           through a Route. The cost is that the Bearer token above rides an unverified
+           connection, so set dhcp_api.insecureSkipTLSVerify: false once provider-http
+           trusts that CA — either through its pod's trust bundle or a forProvider
+           tlsConfig, which the CRD refuses to combine with a true here (a CEL rule that
+           fires only on true, so rendering false beside one is fine).
+
+           ternary rather than `| default true`: sprig's default treats false as empty,
+           so an explicit false would render as true and the key could never be turned
+           off. hasKey keeps "not configured" apart from "configured off", the same
+           distinction the network gate above draws. */}}
+    insecureSkipTLSVerify: {{ ternary $api.insecureSkipTLSVerify true (hasKey $api "insecureSkipTLSVerify") }}
     headers:
       Content-Type:
         - "application/json"

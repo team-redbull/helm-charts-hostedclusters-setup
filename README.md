@@ -74,6 +74,26 @@ A cluster with no `dhcp_values` block renders nothing — the template is gated 
 default: `dhcp_values` itself is truthy for every cluster once `sites/configValues.yaml`
 sets the globals.
 
+### TLS to the API
+
+`dhcp_api.insecureSkipTLSVerify` defaults to **true**, rendering
+`spec.forProvider.insecureSkipTLSVerify: true` on the Request.
+
+It exists because of what happens without it. provider-http verifies the API's
+certificate, and where `dhcp_api.url` is an OpenShift Route that certificate is signed
+by the cluster's own ingress CA — which the provider pod does not trust. Every
+reconcile then fails with `x509: certificate signed by unknown authority` before the
+request leaves the provider, so the scope is never created and nothing about the
+failure is retryable. That is the air-gapped topology; here the url is plain `http` to
+an in-cluster Service, where the flag changes nothing because there is no certificate
+to verify.
+
+The cost is that the bearer token rides an unverified connection. Set it to `false`
+once provider-http trusts that CA, through its pod's trust bundle or a
+`forProvider.tlsConfig` — the CRD rejects a `tlsConfig` combined with a `true` here.
+An explicit `false` is honoured (the template uses `ternary`, not `default`, so `false`
+is not read as "unset").
+
 ### Adding DNS servers per site
 
 `dns.servers` is a **list**, and Helm replaces lists on merge rather than appending — a

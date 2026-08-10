@@ -85,6 +85,20 @@ crossplane:
 dhcp_api:
   url: http://dhcp-scope-manager.dhcp-scope-manager.svc.cluster.local:8080
 
+  # Skip TLS verification on the requests provider-http makes to the url above.
+  #
+  # true because the air-gapped copy of this chart reaches the API through an
+  # OpenShift Route, whose certificate is signed by the cluster's own ingress CA.
+  # provider-http does not trust it, so every reconcile fails before the request is
+  # sent — "x509: certificate signed by unknown authority" — and the scope is never
+  # created. Against the url above it changes nothing: plain http has no certificate
+  # to verify.
+  #
+  # The cost is that the Bearer token below rides an unverified connection, so set
+  # this to false once provider-http trusts that CA. An explicit false is honoured
+  # (the template uses ternary, not `default`, precisely so it can be).
+  insecureSkipTLSVerify: true
+
   # Bearer token for the API. The API disables auth entirely when its own
   # DHCP_API_TOKEN is unset, and an empty ref here renders no Authorization
   # header at all — so this was `{}` while the API ran unauthenticated.
