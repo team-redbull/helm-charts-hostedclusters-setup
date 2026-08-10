@@ -24,6 +24,55 @@ Takes a dict with "network" and "mask". Emits a quoted IPv4 address.
 {{- end -}}
 
 {{/*
+Resolve the DHCP distribution range.
+
+Both bounds omitted derives the subnet's .1 – .253; both written are passed through; one
+without the other is a hard failure. Mirrors DhcpScopePayload.resolve_default_range in
+app/models/scope.py and _CiScopePayload.resolve_default_range in
+scripts/validate_dhcp_values.py (team-redbull/dhcp_scope_manager) — change one, change all
+three.
+
+Resolved here rather than left to the API for the same reason as gateway: the containment
+check in CLAUDE.md section 9 only compares fields the rendered body actually carries, so
+omitting the range from the body would mean a range that drifted on the server was never
+corrected. GET reports the concrete bounds Windows holds, so the body has to carry them.
+
+.253 rather than .254 because .254 is the derived gateway (dhcp.defaultGateway). A range
+ending on it would put the router inside the leasable pool, which the API rejects with a
+422 — so the minimal values file, the one this default exists to enable, would never
+render into anything valid.
+
+The exclusion list is deliberately not consulted: exclusions carve holes inside a Windows
+range, so .1–.253 minus the exclusions already *is* "every address that is not excluded",
+and keeping the bounds fixed is what makes this reproducible in Go templates at all.
+
+Takes a dict with "network", "mask", "start" and "end". Emits "<start> <end>", to be split
+by the caller — a template can only return one string.
+*/}}
+{{- define "dhcp.distributionRange" -}}
+{{- $start := .start | default "" -}}
+{{- $end := .end | default "" -}}
+{{- if and $start $end -}}
+{{- printf "%s %s" $start $end -}}
+{{- else if or $start $end -}}
+{{- $present := ternary "startRange" "endRange" (ne $start "") -}}
+{{- $missing := ternary "endRange" "startRange" (ne $start "") -}}
+{{- fail (printf "dhcp_values.%s is required when dhcp_values.%s is set: the distribution range must be given as a pair, or left out entirely to derive .1-.253." $missing $present) -}}
+{{- else -}}
+{{- $mask := .mask -}}
+{{- if ne $mask "255.255.255.0" -}}
+{{- fail (printf "dhcp_values.startRange and dhcp_values.endRange are required when subnetMask is %s: the default range is only derivable for 255.255.255.0. Set both explicitly." $mask) -}}
+{{- end -}}
+{{- $octets := splitList "." (required "dhcp_values.network is required" .network) -}}
+{{- if ne (len $octets) 4 -}}
+{{- fail (printf "dhcp_values.network %q is not a valid IPv4 address" .network) -}}
+{{- end -}}
+{{- $prefix := printf "%s.%s.%s" (index $octets 0) (index $octets 1) (index $octets 2) -}}
+{{- printf "%s.1 %s.253" $prefix $prefix -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Resolve the scope name: dhcp_values.scopeName when a values file sets one, otherwise the
 hosted cluster's own name.
 
@@ -130,6 +179,10 @@ one documented in CLAUDE.md section 5 and asserted in tests/test_helm.py.
 
 {{- $mask := $v.subnetMask | default "255.255.255.0" -}}
 
+{{- /* Both bounds omitted derives .1–.253; one alone fails the render. Split back apart
+       because a template returns a single string. */}}
+{{- $range := splitList " " (include "dhcp.distributionRange" (dict "network" $v.network "mask" $mask "start" $v.startRange "end" $v.endRange)) -}}
+
 {{- /* Defaults to the hosted cluster's own name when no values file sets it. */}}
 {{- $scopeName := include "dhcp.scopeName" . -}}
 
@@ -138,8 +191,8 @@ one documented in CLAUDE.md section 5 and asserted in tests/test_helm.py.
 {
   "scopeName": {{ $scopeName | toJson }},
   "subnetMask": {{ $mask | toJson }},
-  "startRange": {{ $v.startRange | toJson }},
-  "endRange": {{ $v.endRange | toJson }},
+  "startRange": {{ index $range 0 | toJson }},
+  "endRange": {{ index $range 1 | toJson }},
   "leaseDurationDays": {{ $v.leaseDurationDays | int }},
   "description": {{ $v.description | default "" | toJson }},
   {{- /* Present-but-empty stays null (no DHCP option 3); only an absent key derives .254. */}}

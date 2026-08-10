@@ -12,10 +12,10 @@ documented payload shape (CLAUDE.md §5 in the API repo), and a change to it has
 to be made in both places deliberately — which is the point, because that shape
 is the interface between them.
 
-The duplication is the same trade the derived defaults already make: subnetMask
-and gateway are resolved independently in Helm, in the API's Pydantic model and
-in the values-repo CI validator, because each has to work without the others
-present.
+The duplication is the same trade the derived defaults already make: subnetMask,
+gateway and the startRange/endRange pair are resolved independently in Helm, in
+the API's Pydantic model and in the values-repo CI validator, because each has to
+work without the others present.
 """
 import json
 import shutil
@@ -144,6 +144,50 @@ def test_empty_gateway_renders_null_and_stays_loop_free():
 
 def test_omitted_subnet_mask_derives_a_24():
     assert _rendered_body(_VALUES)["subnetMask"] == "255.255.255.0"
+
+
+def _without_range(values: str = _VALUES) -> str:
+    return (
+        values
+        .replace('  startRange: "10.20.30.100"\n', "")
+        .replace('  endRange: "10.20.30.200"\n', "")
+    )
+
+
+def test_omitted_range_derives_dot_1_to_dot_253():
+    """The bounds are resolved here, not left to the API.
+
+    provider-http only compares fields the desired body actually carries, so a body
+    that omitted the range would never notice a range edited by hand on the server.
+    """
+    body = _rendered_body(_without_range())
+    assert body["startRange"] == "10.20.30.1"
+    assert body["endRange"] == "10.20.30.253"
+
+
+def test_derived_range_renders_the_same_body_as_writing_it_out():
+    """Omitting the bounds and writing the derived ones must be indistinguishable.
+
+    Same property the scopeName derivation has: however the values file expresses it,
+    the wire body is identical, so adopting the default is not itself a change.
+    """
+    explicit = (
+        _VALUES
+        .replace('  startRange: "10.20.30.100"', '  startRange: "10.20.30.1"')
+        .replace('  endRange: "10.20.30.200"', '  endRange: "10.20.30.253"')
+    )
+    assert _rendered_body(_without_range()) == _rendered_body(explicit)
+
+
+def test_derived_range_and_derived_gateway_render_together():
+    """.253 exists so these two defaults can share one body without colliding.
+
+    The API rejects a gateway inside the distribution range that no exclusion covers,
+    so an endRange of .254 would make this exact rendered body a 422.
+    """
+    body = _rendered_body(_without_range())
+    assert body["endRange"] == "10.20.30.253"
+    assert body["gateway"] == "10.20.30.254"
 
 
 def test_exclusion_order_is_preserved_as_written():

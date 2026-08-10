@@ -513,6 +513,100 @@ class TestHelmPayloadBody:
         assert body["subnetMask"] == "255.255.0.0"
         assert body["gateway"] == "10.20.0.1"
 
+    _NO_RANGE = (
+        _VALID_VALUES
+        .replace('  startRange: "10.20.30.100"\n', "")
+        .replace('  endRange: "10.20.30.200"\n', "")
+    )
+
+    def test_range_omitted_renders_derived_bounds(self):
+        """Both bounds omitted derives the subnet's .1 – .253.
+
+        Resolved at render time for the same reason as gateway, plus one of its own:
+        the containment check ignores fields the body does not carry, so a body that
+        omitted the range would never notice a range that drifted on the server.
+        """
+        body = self._body(self._NO_RANGE)
+        assert body["startRange"] == "10.20.30.1"
+        assert body["endRange"] == "10.20.30.253"
+
+    def test_derived_range_stops_short_of_the_derived_gateway(self):
+        """.253 and .254 — the two derivations have to coexist in one rendered body.
+
+        A range ending at .254 would put the derived gateway inside the pool, and the
+        API would 422 the very body this default exists to produce.
+        """
+        values = self._NO_RANGE.replace('  gateway: "10.20.30.1"\n', "")
+        body = self._body(values)
+        assert body["endRange"] == "10.20.30.253"
+        assert body["gateway"] == "10.20.30.254"
+
+    def test_derived_range_tracks_the_network(self):
+        values = (
+            self._NO_RANGE
+            .replace('  network: "10.20.30.0"', '  network: "192.168.7.0"')
+            .replace('  gateway: "10.20.30.1"', '  gateway: "192.168.7.1"')
+        )
+        body = self._body(values)
+        assert body["startRange"] == "192.168.7.1"
+        assert body["endRange"] == "192.168.7.253"
+
+    def test_explicit_range_is_passed_through(self):
+        body = self._body(_VALID_VALUES)
+        assert body["startRange"] == "10.20.30.100"
+        assert body["endRange"] == "10.20.30.200"
+
+    def test_half_a_range_fails_the_render(self):
+        """One bound alone is refused here, not silently completed downstream."""
+        values = self._NO_RANGE.replace(
+            "  leaseDurationDays: 8",
+            '  startRange: "10.20.30.100"\n  leaseDurationDays: 8',
+        )
+        stderr = _helm_template_fails(values)
+        assert "dhcp_values.endRange is required when dhcp_values.startRange is set" in stderr
+
+    def test_non_24_mask_without_range_fails_render(self):
+        """The .1–.253 convention holds for a /24 only — fail rather than guess."""
+        values = (
+            self._NO_RANGE
+            .replace('  subnetMask: "255.255.255.0"', '  subnetMask: "255.255.0.0"')
+            .replace('  network: "10.20.30.0"', '  network: "10.20.0.0"')
+            .replace('  gateway: "10.20.30.1"', '  gateway: "10.20.0.1"')
+        )
+        stderr = _helm_template_fails(values)
+        assert (
+            "dhcp_values.startRange and dhcp_values.endRange are required when "
+            "subnetMask is 255.255.0.0"
+        ) in stderr
+
+    def test_a_values_file_carrying_only_a_network_renders_completely(self):
+        """The day-1 shape: network, lease and DNS — everything else derived.
+
+        This is what the range default is for. If this render ever needs another key
+        back, the default has stopped doing its job.
+        """
+        values = textwrap.dedent("""\
+            crossplane:
+              namespace: test-ns
+            dhcp_api:
+              url: https://dhcp-api.lab.local
+              tokenSecretRef: null
+            dhcp_values:
+              network: "10.20.30.0"
+              leaseDurationDays: 8
+              dns:
+                servers:
+                  - "10.0.0.53"
+              failover: null
+        """)
+        cr = _parse_cr(_helm_template(values, _cluster_name("cluster-a")))
+        body = json.loads(cr["spec"]["forProvider"]["payload"]["body"])
+        assert body["scopeName"] == "cluster-a"
+        assert body["subnetMask"] == "255.255.255.0"
+        assert body["startRange"] == "10.20.30.1"
+        assert body["endRange"] == "10.20.30.253"
+        assert body["gateway"] == "10.20.30.254"
+
     def test_gateway_null_renders_null(self):
         values = _VALID_VALUES.replace('  gateway: "10.20.30.1"', "  gateway: null")
         body = self._body(values)
