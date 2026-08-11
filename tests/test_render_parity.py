@@ -110,15 +110,35 @@ def test_rendered_body_matches_the_api_payload_shape():
 
 
 def test_derived_scope_name_renders_the_same_body():
-    """Deleting scopeName from a values file must change nothing on the wire.
+    """Deleting scopeName changes nothing on the wire — when the case already matches.
 
-    Whole point of the derivation: the name moves from the file's contents to the
-    file's name, and the request body is byte-identical either way. If it were not,
-    every existing scope would take a rename PUT on the first reconcile after this
-    shipped.
+    The name moves from the file's contents to the file's name, and the request body
+    is byte-identical either way. The derivation upper-cases, so "already matches"
+    means the explicit name *is* the upper-cased cluster name; that is the only shape
+    in which deleting the key is free.
+    """
+    upper = _VALUES.replace('  scopeName: "Cluster-A"\n', '  scopeName: "CLUSTER-A"\n')
+    without = _VALUES.replace('  scopeName: "Cluster-A"\n', "")
+    assert _rendered_body(without, cluster_name="Cluster-A") == _rendered_body(upper)
+
+
+def test_deleting_a_differently_cased_scope_name_renames_the_scope():
+    """The other half, and the one that costs something.
+
+    An explicit "Cluster-A" is passed through as written; deleting the key derives
+    "CLUSTER-A" instead. So dropping the line is *not* a no-op for a values file whose
+    name was not already upper-case — the body changes in exactly one field and the
+    scope takes a rename PUT on the next reconcile. Pinned so that lands as a decision
+    rather than a surprise: the alternative, upper-casing explicit names too, would
+    rename scopes nobody touched.
     """
     without = _VALUES.replace('  scopeName: "Cluster-A"\n', "")
-    assert _rendered_body(without, cluster_name="Cluster-A") == _rendered_body(_VALUES)
+    derived = _rendered_body(without, cluster_name="Cluster-A")
+    explicit = _rendered_body(_VALUES)
+    assert derived["scopeName"] == "CLUSTER-A"
+    assert explicit["scopeName"] == "Cluster-A"
+    differing = {k for k in derived if derived[k] != explicit[k]}
+    assert differing == {"scopeName"}
 
 
 def test_rendered_field_order_matches_the_api():

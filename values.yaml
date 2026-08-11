@@ -17,10 +17,14 @@
 # came from — it merges the four valueFiles into one flat .Values. The appset derives it
 # from the same `.path.filename | trimSuffix` expression that names the Application.
 #
-# dhcp_values.scopeName defaults to this, so a values file never has to repeat a name its
-# own file name already carries. A chart-owned key rather than injecting straight into
-# dhcp_values.scopeName because helm parameters outrank valueFiles: written there, an
+# dhcp_values.scopeName defaults to this upper-cased, so a values file never has to repeat
+# a name its own file name already carries. A chart-owned key rather than injecting straight
+# into dhcp_values.scopeName because helm parameters outrank valueFiles: written there, an
 # explicit scopeName in a values file could never win.
+#
+# Only dhcp.scopeName upper-cases, and only the derived name. This value stays as written:
+# it also names the Argo Application and derives the CR's hcp-<clusterName> namespace, which
+# Kubernetes requires to be lowercase.
 #
 # Empty here so a render without the appset fails loudly in dhcp.scopeName rather than
 # silently producing a scope with no name.

@@ -127,10 +127,11 @@ compared at all, so leaving one to the API would also mean never detecting drift
 
 | Field | Derived as | Notes |
 |---|---|---|
+| `scopeName` | the `clusterName` parameter, **upper-cased** | `cluster-a` → `CLUSTER-A`. Only the derivation upper-cases; an explicit `dhcp_values.scopeName` is used exactly as written, so deleting that key is a no-op only when it already held the upper-cased name. `clusterName` itself is untouched — it also names the Argo Application and the `hcp-<cluster>` namespace, which Kubernetes requires to be lowercase. |
 | `subnetMask` | `255.255.255.0` | |
 | `gateway` | the subnet's `.254` | Only derivable for a /24; any other mask without an explicit gateway fails the render. `gateway: ""` means no option 3 and is honoured as written. |
 | `startRange` + `endRange` | the subnet's `.1` – `.253` | Derived as a **pair** — one bound without the other fails the render. `.253` keeps the range clear of the derived `.254` gateway, which the API would otherwise reject as a gateway inside the leasable pool. /24 only, like `gateway`. Exclusions carve holes inside the range; they do not move its bounds. |
-| `failover.relationshipName` | `<scopeName>-failover` | Windows caps it at 64 characters; a longer derived name fails the render rather than being truncated. |
+| `failover.relationshipName` | `<scopeName>-failover` | Windows caps it at 64 characters; a longer derived name fails the render rather than being truncated. The suffix is appended verbatim, so a derived `scopeName` gives `CLUSTER-A-failover` — mixed case on purpose, and matched character for character by the CI validator. |
 
 ## Templates and tests
 

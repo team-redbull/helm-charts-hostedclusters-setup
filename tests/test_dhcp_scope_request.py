@@ -281,21 +281,28 @@ class TestTlsVerification:
 
 
 class TestScopeNameDerivation:
-    """scopeName defaults to the hosted cluster's own name.
+    """scopeName defaults to the hosted cluster's own name, upper-cased.
 
     One values file is one hosted cluster is one DHCP scope, so the cluster's file
     name already carries the scope name. Helm never sees file names, so hcAppset.yaml
     passes it as --set clusterName. Mirrored by _validate_dhcp_content in
-    team-redbull/dhcp_scope_manager, which derives the same name from the file stem.
+    team-redbull/dhcp_scope_manager, which derives the same name from the file stem
+    and upper-cases it the same way — the case is part of the value Crossplane compares
+    the GET response against, so the two have to agree character for character.
     """
 
     # _VALID_VALUES minus the scopeName line, so the only source left is clusterName.
     _NO_SCOPE_NAME = _VALID_VALUES.replace('  scopeName: "test-scope"\n', "")
 
-    def test_omitted_scope_name_derives_the_cluster_name(self):
+    def test_omitted_scope_name_derives_the_uppercased_cluster_name(self):
         cr = _parse_cr(_helm_template(self._NO_SCOPE_NAME, _cluster_name("cluster-a")))
         body = json.loads(cr["spec"]["forProvider"]["payload"]["body"])
-        assert body["scopeName"] == "cluster-a"
+        assert body["scopeName"] == "CLUSTER-A"
+
+    def test_a_mixed_case_cluster_name_derives_fully_uppercased(self):
+        cr = _parse_cr(_helm_template(self._NO_SCOPE_NAME, _cluster_name("Cluster-A-gpu")))
+        body = json.loads(cr["spec"]["forProvider"]["payload"]["body"])
+        assert body["scopeName"] == "CLUSTER-A-GPU"
 
     def test_explicit_scope_name_beats_the_cluster_name(self):
         """An explicit value wins, so nothing already written has to change.
@@ -308,11 +315,19 @@ class TestScopeNameDerivation:
         body = json.loads(cr["spec"]["forProvider"]["payload"]["body"])
         assert body["scopeName"] == "test-scope"
 
+    def test_explicit_scope_name_is_not_uppercased(self):
+        """Only the derivation upper-cases. A hand-written name is passed through as
+        written — rewriting it would rename a live scope nobody asked to rename, and
+        _validate_dhcp_content leaves it alone too."""
+        cr = _parse_cr(_helm_template(_VALID_VALUES, _cluster_name("cluster-a")))
+        body = json.loads(cr["spec"]["forProvider"]["payload"]["body"])
+        assert body["scopeName"] == "test-scope"
+
     def test_empty_scope_name_derives(self):
         values = _VALID_VALUES.replace('  scopeName: "test-scope"', '  scopeName: ""')
         cr = _parse_cr(_helm_template(values, _cluster_name("cluster-a")))
         body = json.loads(cr["spec"]["forProvider"]["payload"]["body"])
-        assert body["scopeName"] == "cluster-a"
+        assert body["scopeName"] == "CLUSTER-A"
 
     def test_neither_source_fails_the_render(self):
         """A name that cannot be resolved is a hard failure, not a silent skip.
@@ -325,7 +340,14 @@ class TestScopeNameDerivation:
 
     def test_cluster_name_with_a_file_suffix_fails(self):
         """Catches an appset that forgot to trim, rather than creating a live scope
-        on the Windows server literally named "cluster-a.yaml"."""
+        on the Windows server literally named "cluster-a.yaml".
+
+        Also pins the order of the two steps in dhcp.scopeName: the guard matches
+        ".yaml" literally, so upper-casing before it would turn the name into
+        "CLUSTER-A.YAML", stop the hasSuffix matching, and render the very thing this
+        exists to prevent. If this test starts passing an uppercase name through,
+        `upper` has been moved above the guard.
+        """
         stderr = _helm_template_fails(self._NO_SCOPE_NAME, _cluster_name("cluster-a.yaml"))
         assert "still carries a file suffix" in stderr
 
@@ -348,7 +370,10 @@ class TestScopeNameDerivation:
             _helm_template(self._failover_without_scope_name(), _cluster_name("cluster-a"))
         )
         body = json.loads(cr["spec"]["forProvider"]["payload"]["body"])
-        assert body["failover"]["relationshipName"] == "cluster-a-failover"
+        # Upper-cased scope name, literal "-failover" suffix. Mixed case on purpose:
+        # only the derived name is upper-cased, and _validate_dhcp_content in
+        # team-redbull/dhcp_scope_manager appends the same lowercase suffix.
+        assert body["failover"]["relationshipName"] == "CLUSTER-A-failover"
 
     def test_derived_relationship_name_over_64_chars_is_rejected(self):
         """Windows caps a relationship name at 64, so a cluster name is capped at 55
@@ -673,7 +698,7 @@ class TestHelmPayloadBody:
         """)
         cr = _parse_cr(_helm_template(values, _cluster_name("cluster-a")))
         body = json.loads(cr["spec"]["forProvider"]["payload"]["body"])
-        assert body["scopeName"] == "cluster-a"
+        assert body["scopeName"] == "CLUSTER-A"
         assert body["subnetMask"] == "255.255.255.0"
         assert body["startRange"] == "10.20.30.1"
         assert body["endRange"] == "10.20.30.253"

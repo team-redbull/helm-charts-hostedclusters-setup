@@ -74,7 +74,7 @@ by the caller — a template can only return one string.
 
 {{/*
 Resolve the scope name: dhcp_values.scopeName when a values file sets one, otherwise the
-hosted cluster's own name.
+hosted cluster's own name, upper-cased.
 
 One values file is one hosted cluster is one DHCP scope, so the file name already *is* the
 name — repeating it in the file could only ever be redundant or wrong. It arrives as
@@ -90,17 +90,29 @@ which derives the same name from the cluster file's stem — change one, change 
 
 An unresolvable name is a hard failure, not a silent skip: a skip is what the old
 scopeName-based gate did, and it hid the misconfiguration instead of reporting it.
+
+The derived name is upper-cased; an explicit dhcp_values.scopeName is passed through
+exactly as written, because only the derivation is inventing a name. The upper-casing
+happens here and nowhere else — clusterName itself must stay as written, since it also
+names the Argo Application and derives the CR's hcp-<cluster> namespace, which
+Kubernetes requires to be lowercase.
 */}}
 {{- define "dhcp.scopeName" -}}
 {{- $v := .Values.dhcp_values | default dict -}}
-{{- $name := $v.scopeName | default .Values.clusterName -}}
+{{- $explicit := $v.scopeName | default "" -}}
+{{- $name := $explicit | default .Values.clusterName -}}
 {{- if not $name -}}
 {{- fail "dhcp_values.scopeName could not be resolved: pass the hosted cluster's name as clusterName (hcAppset.yaml does this with --set), or set dhcp_values.scopeName explicitly." -}}
 {{- end -}}
 {{- /* hcAppset trims the suffix; catch a misconfigured one here rather than letting
-       "cluster-a.yaml" become the literal scope name on the Windows server. */}}
+       "cluster-a.yaml" become the literal scope name on the Windows server. Checked
+       before the upper-casing below: ".yaml" upper-cased is ".YAML", which this
+       hasSuffix would no longer match, and the guard would quietly stop guarding. */}}
 {{- if or (hasSuffix ".yaml" $name) (hasSuffix ".yml" $name) -}}
 {{- fail (printf "clusterName %q still carries a file suffix; hcAppset.yaml is meant to trim it. Left as-is this becomes the literal DHCP scope name on the Windows server." $name) -}}
+{{- end -}}
+{{- if not $explicit -}}
+{{- $name = upper $name -}}
 {{- end -}}
 {{- if gt (len $name) 256 -}}
 {{- fail (printf "scopeName %q is %d characters; the API allows at most 256." $name (len $name)) -}}
