@@ -38,8 +38,9 @@ kind: Request
 metadata:
   name: dhcp-scope-{{ required "dhcp_values.network is required" .Values.dhcp_values.network | replace "." "-" }}
   {{- /* Always rendered now, and it must be: this kind is namespaced, so an object with no
-         namespace lands in `default` rather than being dropped. dhcp.crNamespace also feeds
-         the token placeholder below, so the CR and the Secret it reads cannot drift apart. */}}
+         namespace lands in `default` rather than being dropped. This is the Request's
+         namespace ONLY — the token Secret's is its own value (see the Authorization
+         header below), so that one credential can serve every hosted cluster. */}}
   namespace: {{ $ns }}
 spec:
   {{- /* managementPolicies replaces deletionPolicy, which does not exist on this kind: the
@@ -101,18 +102,21 @@ spec:
       # body only. NOT secretInjectionConfigs: that runs the other direction,
       # extracting response fields *into* a Secret.
       #
-      # The namespace is $ns — the Request's own. The Secret lives beside the CR, so
-      # one variable answers for both and they cannot drift apart. In the air-gapped
-      # environment that resolves to hcp-<clusterName>, giving each hosted cluster its
-      # own token next to its own Request; here it names an existing namespace.
+      # The namespace comes from tokenSecretRef, NOT from $ns, and both chart copies
+      # set it to dhcp-scope-manager. It used to fall back to the Request's own, which
+      # in the air-gapped environment is hcp-<clusterName> — one copy of the token per
+      # hosted cluster. Now the token is deployed once per cluster and every Request
+      # reads that one Secret across namespaces (provider-http's ClusterRole grants
+      # secrets/* cluster-wide). The `| default $ns` below is the fallback for a chart
+      # copy that omits the key; nothing in production relies on it.
       #
       # It has to be written in rather than inherited: provider-http's regex demands
       # three literal segments and is never handed the CR's namespace, and a
       # placeholder it cannot parse is left in the header as literal text with no error
-      # raised — surfacing as a 401 that names nothing.
+      # raised — surfacing as a 401 that names nothing. That matters more now that this
+      # namespace and the CR's are separate values and so CAN disagree.
       #
-      # An explicit tokenSecretRef.namespace still overrides, for a Secret that really
-      # does live somewhere else.
+      # Still required even though the API's scope GETs are anonymous: a Request writes.
       Authorization:
         - {{ printf "Bearer {{ %s:%s:%s }}" .name (.namespace | default $ns) .key | quote }}
       {{- end }}

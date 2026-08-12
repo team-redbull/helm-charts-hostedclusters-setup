@@ -158,12 +158,17 @@ class TestHelmTemplateBasic:
         cr = _parse_cr(_helm_template(values, _cluster_name("cluster-a")))
         assert cr["metadata"]["namespace"] == "hcp-cluster-a"
 
-    def test_derived_namespace_is_shared_by_the_token_secret(self):
-        """One variable feeds the CR's namespace and the token placeholder.
+    def test_token_namespace_is_independent_of_the_cr_namespace(self):
+        """The token does NOT sit beside the Request, and that is the point.
 
-        The Secret is meant to sit beside the Request, so naming it twice could only
-        create two things to keep in step. This is the air-gapped shape: each hosted
-        cluster's token lives in the same hcp-<clusterName> namespace as its Request.
+        This is the air-gapped shape: the CR derives hcp-<clusterName>, one per hosted
+        cluster, while the token it reads lives once per cluster in dhcp-scope-manager.
+        The two used to come from one variable, which put a copy of the credential in
+        every hosted cluster's namespace — N copies per MCE, all rotating together.
+
+        They are separate values now and therefore CAN disagree, which is what this
+        test exists to stop: a wrong token namespace is not a render error, it is a
+        placeholder provider-http passes through as literal text — a 401 naming nothing.
         """
         values = (
             _VALID_VALUES.replace(_CROSSPLANE_NS, "crossplane:\n  namespace: ~\n")
@@ -172,7 +177,22 @@ class TestHelmTemplateBasic:
         cr = _parse_cr(_helm_template(values, _cluster_name("cluster-a")))
         header = cr["spec"]["forProvider"]["headers"]["Authorization"][0]
         assert cr["metadata"]["namespace"] == "hcp-cluster-a"
-        assert ":hcp-cluster-a:" in header
+        assert header == (
+            "Bearer {{ dhcp-scope-manager-token:dhcp-scope-manager:api-token }}"
+        )
+
+    def test_no_token_secret_is_rendered(self):
+        """This chart never renders the token itself.
+
+        One Secret per cluster is deployed by helm-charts-dhcp-scope-manager's
+        dhcp-api-token subchart. Rendering one here would put it back to one per
+        hosted-cluster namespace, which is what this whole change removed.
+        """
+        rendered = _helm_template(
+            _VALID_VALUES.replace("  tokenSecretRef: null\n", ""),
+            _cluster_name("cluster-a"),
+        )
+        assert "kind: Secret" not in rendered
 
     def test_cr_namespace_explicit_beats_the_derived_one(self):
         values = _VALID_VALUES.replace(

@@ -127,16 +127,21 @@ Only meaningful for the namespaced Request kind (http.m.crossplane.io, Crossplan
 `.m.` API group). provider-http v1.0.14 ships *both* that and the legacy cluster-scoped
 http.crossplane.io/v1alpha2 — namespaced is the newer of the two, not an older one.
 
-Load-bearing twice over, which is why it resolves in one place: it is the CR's own
-namespace, and it is the default namespace for the Bearer-token Secret placeholder.
+Load-bearing ONCE now: the CR's own namespace, and nothing else. It used to also be the
+default namespace of the Bearer-token Secret placeholder, on the theory that the Secret
+should sit beside the CR — but that put a copy of the token in every hcp-<clusterName>
+namespace, N copies of one credential per MCE. The token's namespace is now
+dhcp_api.tokenSecretRef.namespace, written out explicitly, and one Secret per cluster
+serves every Request on it.
+
+Do NOT re-couple the two to "keep them in sync". They are deliberately separate values.
+What made the old coupling look attractive is still true and still worth knowing:
 provider-http parses `{{ name:namespace:key }}` with a regex requiring exactly three
 segments (internal/data-patcher/parser.go) and never passes the CR's own namespace in,
-so a placeholder cannot inherit it — the template has to write the same string into
-both. Deriving them from one helper is what stops them disagreeing.
-
-A placeholder that fails that regex is left in the header as literal text with no error
-raised, so a wrong namespace here surfaces as a 401 from the DHCP API rather than as
-anything naming the Secret.
+so a placeholder cannot inherit anything — the template writes a literal either way. A
+placeholder that fails that regex is left in the header as literal text with no error
+raised, so a wrong namespace there surfaces as a 401 from the DHCP API naming nothing.
+The render test guards that now, instead of the shared derivation.
 
 Empty is a hard failure rather than a rendered `hcp-`: clusterName defaults to "" in
 values.yaml, so the derived form silently produces a garbage namespace for any render
