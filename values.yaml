@@ -141,10 +141,12 @@ dhcp_api:
   #
   # Still needed even though the API's scope GETs are anonymous now: a Request writes.
   #
-  # name and key are hardcoded on the other side too — the dhcp-api-token subchart
-  # writes exactly this Secret name and key, and the deploy chart's
-  # apiAuth.secretName/tokenKey point at the same pair. Changing either means
-  # changing all three, and a mismatch is not a render error: it is a placeholder
+  # All three are hardcoded on the other side too — the dhcp-api-token subchart
+  # writes exactly this Secret name and key, and STAMPS this namespace as a literal
+  # rather than taking the release namespace, so the Secret lands where this
+  # placeholder looks however that chart is deployed. The deploy chart's
+  # apiAuth.secretName/tokenKey point at the same name and key. Changing any of them
+  # means changing all three places, and a mismatch is not a render error: it is a placeholder
   # naming a Secret that does not exist, which provider-http passes through as
   # literal text. Nothing generates this Secret and nothing creates it by hand;
   # both of those paths were removed (a generated one was re-minted on every Argo
