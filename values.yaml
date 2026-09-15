@@ -180,3 +180,70 @@ dhcp_api:
 #
 # See docs/dhcp_values.md in team-redbull/dhcp_scope_manager for the field
 # reference.
+
+# Registering this hosted cluster with the day2 sig repos.
+#
+# day2 (gitops-day2-prod) decides *where* charts run, and its entire registration
+# mechanism is the existence of a folder: a cluster exists for a sig when
+# sites/<site>/<env>/mces/<mce>/<cluster>/ exists in that sig's repo. Day1 is what
+# brings the cluster into existence, so day1 is what can create that folder — see
+# templates/add-cluster-to-day2-job.yaml and README.md.
+#
+# Everything here is infrastructure — how to reach the sig repos and what to run.
+# The one key the values repo sets is copy_to_sigs, below.
+day2:
+  # WHICH sigs this cluster is registered with. Empty here on purpose: the values
+  # repo (gitops-day1/platform-config) is the only place a sig is ever turned on,
+  # and with the list empty this chart renders no Job at all.
+  #
+  # A name being in the list IS the enablement — there is no enabled: flag, which
+  # matches day2's own "the folder is the registration" idiom and leaves no way
+  # for two switches to disagree.
+  #
+  # Set it globally in sites/configValues.yaml, and narrow it at any layer below:
+  #
+  #   day2:
+  #     copy_to_sigs: [redbull, nasa]
+  #
+  # Helm REPLACES lists rather than merging them, so a lower layer states the
+  # complete set for its scope rather than patching the one above it —
+  # `day2: { copy_to_sigs: [redbull] }` in an MCE's values.yaml means exactly
+  # redbull there, and `[]` means none. That is the intended way to narrow it.
+  #
+  # Each name becomes a repo URL and a path inside the checkout, so names are
+  # validated against ^[a-z0-9][a-z0-9-]*$ (day2.validSigName) — a name with a
+  # slash or a .. in it would write outside the folder this Job may touch.
+  copy_to_sigs: []
+
+  # Branch to clone and push in every sig repo. One value, not per sig: they all
+  # use the same one, and a sig that did not would be the exception worth its own
+  # conversation rather than its own config key.
+  branch: main
+
+  # The push credential. Mounted into the Job from a Secret by secretKeyRef, never
+  # passed on a command line, and handed to git through a credential helper so it
+  # never reaches a URL, argv or `git remote -v` either.
+  #
+  # The token must be able to push to the sig repos' default branch. Note that a
+  # direct push bypasses those repos' blocking MR lint; that is acceptable because
+  # the only thing pushed is a folder whose day1 parity is guaranteed by
+  # construction (the day1 file is what created this Application). If the branch is
+  # protected the push is rejected and the Job fails loudly, which is the intended
+  # failure mode rather than a silent skip.
+  tokenSecretRef:
+    name: day2-git-token
+    key: token
+
+  git:
+    # Committer identity on the generated commits. A distinct bot identity, so the
+    # sig repos' history shows plainly which commits came from this automation —
+    # the same convention the day1 segment-allocation workflow follows.
+    userName: day2-cluster-registration
+    userEmail: day2-cluster-registration@redbull.local
+
+    # Skip TLS verification on the git operations.
+    #
+    # false because the host here uses a publicly trusted CA. Set it true only if
+    # the clone fails on certificate verification, i.e. the signing CA is not in
+    # the image's trust store.
+    insecureSkipTLSVerify: false

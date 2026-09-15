@@ -1,0 +1,126 @@
+{{- /* Registers this hosted cluster with each sig listed in day2.copy_to_sigs, by
+       creating its folder in that sig's repo. An empty or absent list renders
+       nothing at all, so the feature is off until someone opts a sig in.
+
+       A plain resource, NOT an Argo hook. Hooks re-run on every sync by
+       definition — there is no "run once" hook policy — whereas a Job's spec is
+       immutable, so Argo applies this once and every later sync is a no-op
+       against the completed object. The name carries a hash of the inputs so a
+       genuine change produces a new Job rather than an illegal patch of the old
+       one; see day2.jobName for why that matters. */}}
+{{- if .Values.day2.copy_to_sigs }}
+{{- $sigTable := include "day2.sigTable" . }}
+{{- $env := include "day2.env" . }}
+{{- $secret := .Values.day2.tokenSecretRef }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "day2.jobName" . }}
+  annotations:
+    {{- /* Runs after everything else in this chart has gone Healthy. Argo applies
+           a wave only once the previous wave is healthy, so a cluster that never
+           comes up never reaches this — which is intended: a cluster that failed
+           to provision should not be announced to the sig repos.
+
+           A literal, like every other wave in this chart. Deliberately far above
+           anything else here so it stays last as the chart grows; the air-gapped
+           copy carries HostedCluster/NodePool too, and APPLY-DAY2-COPY.md says to
+           check their waves before trusting this number. */}}
+    argocd.argoproj.io/sync-wave: "100"
+  labels:
+    app.kubernetes.io/name: add-cluster-to-day2
+    app.kubernetes.io/component: day2-registration
+    app.kubernetes.io/part-of: hostedclusters-setup
+spec:
+  {{- /* Low on purpose: the common failures here are a bad token or a protected
+         branch, and neither is fixed by retrying. The Job's own retries cover a
+         transient network blip; anything else should fail visibly and fast. */}}
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  {{- /* No ttlSecondsAfterFinished. A TTL-deleted Job is a resource Argo then
+         sees as missing, so selfHeal recreates it and it runs again — a loop.
+         Completed Jobs linger instead, a handful per cluster, and double as a
+         record of when each cluster was registered. */}}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: add-cluster-to-day2
+        app.kubernetes.io/component: day2-registration
+    spec:
+      restartPolicy: Never
+      {{- /* This pod talks to git, never to the Kubernetes API. */}}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: add-cluster-to-day2
+          {{- /* Hardcoded, and edited by hand in the air-gapped copy — the same way
+                 every other repo URL and registry in this codebase is handled. Not a
+                 chart value: there is exactly one right answer per environment and
+                 nothing downstream should be able to swap the image a credential-
+                 bearing pod runs.
+
+                 alpine/git, not the larger python-git-yq, now that both would have to
+                 be mirrored either way: this Job needs git and a POSIX shell and
+                 nothing else, and every additional package in the image is one more
+                 thing to CVE-track and re-mirror inside the air-gap. The script is
+                 written to that floor deliberately (POSIX sh, no jq, no python), so
+                 swapping the image later needs no code change.
+
+                 Pinned, never :latest — an air-gapped mirror is a deliberate act and
+                 a floating tag would silently mean different things on each side. */}}
+          image: "alpine/git:2.52.0"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          env:
+            - name: SIG_TABLE
+              value: |-
+{{ $sigTable | trim | indent 16 }}
+            - name: BRANCH
+              value: {{ .Values.day2.branch | quote }}
+            - name: SITE
+              value: {{ required "site is required: hcAppset.yaml passes it with --set." .Values.site | quote }}
+            - name: MCE
+              value: {{ required "mce is required: hcAppset.yaml passes it with --set." .Values.mce | quote }}
+            {{- /* DAY2_ENV, not ENV: some shells treat $ENV as a startup file to
+                   source, and this script runs under /bin/sh. */}}
+            - name: DAY2_ENV
+              value: {{ $env | quote }}
+            - name: CLUSTER
+              value: {{ required "clusterName is required: hcAppset.yaml passes it with --set." .Values.clusterName | quote }}
+            {{- /* From a Secret, and via env rather than argv, so the token never
+                   shows up in `ps` or in this pod's own spec. */}}
+            - name: GIT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret.name | quote }}
+                  key: {{ $secret.key | quote }}
+            - name: GIT_USER_NAME
+              value: {{ .Values.day2.git.userName | quote }}
+            - name: GIT_USER_EMAIL
+              value: {{ .Values.day2.git.userEmail | quote }}
+            - name: GIT_SSL_NO_VERIFY
+              value: {{ .Values.day2.git.insecureSkipTLSVerify | quote }}
+            - name: WORKDIR
+              value: /work
+            {{- /* git wants a writable HOME for its config; the root filesystem
+                   is read-only, so point it at the emptyDir. */}}
+            - name: HOME
+              value: /work
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+{{ .Files.Get "files/add-cluster-to-day2.sh" | indent 14 }}
+          volumeMounts:
+            - name: work
+              mountPath: /work
+      volumes:
+        - name: work
+          emptyDir: {}
+{{- end }}

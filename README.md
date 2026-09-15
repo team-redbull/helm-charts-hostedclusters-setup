@@ -44,6 +44,42 @@ in the namespace `crossplane.namespace` resolves to — `hcp-<clusterName>` by d
 `http.crossplane.io` group; `oc get request` may resolve to either, so spell out the group
 (`oc get requests.http.m.crossplane.io -A`) when it matters.
 
+## Registering the cluster with day2
+
+Besides the DHCP scope, this chart can register the cluster with the day2 sig
+repos. day2 has no registration file — a cluster exists for a sig when
+`sites/<site>/<env>/mces/<mce>/<cluster>/` exists in that sig's repo — so
+"registering" means creating that folder, with a `.gitkeep` in it.
+
+`templates/add-cluster-to-day2-job.yaml` runs `files/add-cluster-to-day2.sh` once
+per cluster to do exactly that, for every sig in `day2.copy_to_sigs`. The list is
+empty here and set from the values repo; empty renders **no Job at all**.
+
+```
+day1 values file ──Argo──► this chart ──Job──► git push ──► sigs/<sig>/sites/<site>/<env>/mces/<mce>/<cluster>/.gitkeep
+```
+
+Four properties worth knowing before changing any of it:
+
+- **It runs once**, because it is an ordinary Job rather than an Argo hook —
+  hooks re-run on every sync, and a Job's spec is immutable, so Argo applies it
+  and then no-ops. The name therefore ends in a hash of the inputs, so a changed
+  sig list produces a *new* Job instead of an illegal patch of the old one. Get
+  that wrong and the symptom is a permanently failing sync, not a missing folder.
+- **`sync-wave: "100"`** puts it after everything else in the chart, so a cluster
+  that never becomes Healthy is never announced to the sig repos.
+- **"Already there" is a success.** Existing folders are logged and skipped,
+  including ones that have grown real chart folders. That is what makes it safe
+  to run across a fleet that is already partly registered.
+- **The `<env>` segment is derived**, from field 2 of the MCE name, and checked
+  against the cluster name. day1's tree has no env level, so there is nothing to
+  read it from; a disagreement fails the render rather than guessing, because a
+  wrong folder breaks the whole sig's render and not just this cluster.
+
+Recovering a failed Job, and everything that differs in the air-gapped copy
+(repo URLs, image, Secret scope, TLS), is in `APPLY-DAY2-COPY.md` in
+`gitops-day1/argocd-platform`.
+
 ## Values
 
 The four values-repo files are layered on top of this chart's `values.yaml`, in
