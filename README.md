@@ -97,10 +97,14 @@ values file deleted ──► Application deleted ──► Request deleted (sco
 
 - **202 or 409 is success.** 409 means a run for the cluster is already going.
   The Job starts the run and does not wait for it.
-- **Anything else fails the Job** after a few retries. Argo CD then keeps the
-  Application with a `DeletionError` condition and retries the hook on its next
-  reconcile. Fix the API and it converges, or delete the hook Job by hand to let
-  the deletion finish and POST the release yourself.
+- **Anything else is retried by the script itself**, with backoff capped at 60s,
+  for up to 55 minutes. Argo CD holds the Application while the Job runs, but it
+  does **not** retry a failed PostDelete hook: verified on GitOps 1.18 (Argo CD
+  3.1), a Failed Job counts as complete and the Application is deleted anyway.
+  So a final failure leaves the Failed Job behind as the only record that the
+  segment was not released; its log ends with the exact request to send by hand.
+  (Argo CD's docs describe a `DeletionError` hold and a retry; this version does
+  neither.)
 - **It renders with no values file**, from `clusterName` alone, because at
   PostDelete time the cluster's file is already deleted. It is never gated on
   `dhcp_values`. An empty `release_segment.workflows_api_url` renders no hook.

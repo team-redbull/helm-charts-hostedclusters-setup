@@ -13,16 +13,25 @@
 #
 #   202  the run started                         -> success
 #   409  a run for this cluster is already going -> success
-#   anything else, or no answer                  -> retried here, then the Job
-#        fails: Argo CD keeps the Application with a DeletionError condition and
-#        retries the hook on its next reconcile. Visible, never silent.
+#   anything else, or no answer                  -> retried HERE, with backoff
+#        capped at 60s, until DEADLINE_SECONDS.
+#
+# The retrying has to happen here because Argo CD will not do it. Verified on
+# OpenShift GitOps 1.18 (Argo CD 3.1): while this Job RUNS, the Application waits
+# ("Waiting for N post-delete hooks to complete"), but a Job that FAILS counts as
+# complete — Argo CD then finishes deleting the Application and never runs the
+# hook again. So a failure here is final: the Failed Job is left behind as the
+# record (HookSucceeded only cleans up a Job that succeeded), and its log ends
+# with the exact request to send by hand.
 #
 # Inputs, all from the Job's env (see templates/release-segment-hook.yaml):
 #   WORKFLOWS_API_URL          the orchestrator API base, no trailing path
 #   CLUSTER                    this hosted cluster's name (hcAppset's clusterName)
 #   SEGMENT_TYPE               the segment type to release (HC)
 #   INSECURE_SKIP_TLS_VERIFY   "true" to skip TLS verification (ingress CA)
-#   MAX_ATTEMPTS               optional, default 5
+#   DEADLINE_SECONDS           optional, default 3300 (the Job's own
+#                              activeDeadlineSeconds is 3600)
+#   MAX_ATTEMPTS               optional cap on attempts, default 0 = none
 #
 # POSIX sh and busybox wget only: the image is alpine/git, already mirrored for
 # the day2 registration Job, so this needs nothing new inside the air-gap.
@@ -31,7 +40,8 @@ set -eu
 : "${WORKFLOWS_API_URL:?WORKFLOWS_API_URL is required}"
 : "${CLUSTER:?CLUSTER is required}"
 : "${SEGMENT_TYPE:?SEGMENT_TYPE is required}"
-MAX_ATTEMPTS="${MAX_ATTEMPTS:-5}"
+DEADLINE_SECONDS="${DEADLINE_SECONDS:-3300}"
+MAX_ATTEMPTS="${MAX_ATTEMPTS:-0}"
 
 # The name goes into a JSON body built with printf, so hold it to the shape an
 # Argo CD Application name already has. Anything else is a bug upstream of
@@ -46,6 +56,7 @@ esac
 URL="${WORKFLOWS_API_URL%/}/workflows/segment-lifecycle/release-segment"
 BODY=$(printf '{"cluster":"%s","type":"%s"}' "$CLUSTER" "$SEGMENT_TYPE")
 
+started=$(date +%s)
 attempt=1
 delay=5
 while :; do
@@ -74,13 +85,18 @@ while :; do
             ;;
     esac
 
-    echo "attempt $attempt/$MAX_ATTEMPTS: POST $URL answered ${status:-nothing}:" >&2
+    echo "attempt $attempt: POST $URL answered ${status:-nothing}:" >&2
     printf '%s\n' "$out" | tail -n 3 >&2
-    if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
-        echo "giving up: the Application stays in DeletionError and Argo CD retries this hook" >&2
+    elapsed=$(( $(date +%s) - started ))
+    if [ $((elapsed + delay)) -ge "$DEADLINE_SECONDS" ] \
+        || { [ "$MAX_ATTEMPTS" -gt 0 ] && [ "$attempt" -ge "$MAX_ATTEMPTS" ]; }; then
+        echo "giving up after ${elapsed}s and $attempt attempt(s). Argo CD does not retry a" >&2
+        echo "failed PostDelete hook, so the segment is NOT released. Once the API answers, send:" >&2
+        echo "  POST $URL $BODY" >&2
         exit 1
     fi
     sleep "$delay"
     attempt=$((attempt + 1))
     delay=$((delay * 2))
+    [ "$delay" -gt 60 ] && delay=60
 done

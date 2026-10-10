@@ -9,8 +9,10 @@ are load-bearing, and each fails silently if broken:
 2. It renders without the cluster's values file. At PostDelete time that file is
    already deleted, so a hook gated on anything it sets (dhcp_values) would
    simply vanish and the segment would never be released.
-3. The script treats 202 and 409 as success and everything else as a failure
-   the Application is held for — checked against busybox wget's real output.
+3. The script treats 202 and 409 as success and RETRIES everything else
+   itself, because Argo CD does not: a failed PostDelete hook counts as complete
+   and the Application is deleted anyway (verified on GitOps 1.18 / Argo CD 3.1).
+   Checked against busybox wget's real output.
 
 Requirements: helm CLI on PATH (module-level skip marker); `sh` for the script.
 """
@@ -148,6 +150,7 @@ def _run_script(tmp_path: Path, wget: str, cluster: str = "ocp4-prep-c1-site1-a"
         "CLUSTER": cluster,
         "SEGMENT_TYPE": "HC",
         "MAX_ATTEMPTS": "3",
+        "DEADLINE_SECONDS": "3300",
     }
     return subprocess.run(["sh", str(SCRIPT)], env=env, capture_output=True, text=True)
 
@@ -171,7 +174,9 @@ def test_anything_else_fails_after_the_retries(tmp_path, code):
     r = _run_script(tmp_path, _WGET_FAIL.format(code=code))
     assert r.returncode == 1
     assert r.stderr.count("attempt ") == 3
-    assert "DeletionError" in r.stderr
+    # The final failure says the segment was not released and how to fix it.
+    assert "NOT released" in r.stderr
+    assert '{"cluster":"ocp4-prep-c1-site1-a","type":"HC"}' in r.stderr
 
 
 def test_no_answer_at_all_fails(tmp_path):
@@ -184,3 +189,29 @@ def test_a_cluster_name_that_would_break_the_json_is_refused(tmp_path):
     r = _run_script(tmp_path, _WGET_OK, cluster='c1","type":"MCE')
     assert r.returncode == 1
     assert "refusing cluster name" in r.stderr
+
+
+def test_the_deadline_stops_the_retries(tmp_path):
+    """No attempt cap: the time deadline alone ends the loop."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "wget").write_text(_WGET_FAIL.format(code=503))
+    (bin_dir / "sleep").write_text("#!/bin/sh\nexit 0\n")
+    for f in ("wget", "sleep"):
+        (bin_dir / f).chmod(0o755)
+    env = {
+        "PATH": f"{bin_dir}:/usr/bin:/bin",
+        "WORKFLOWS_API_URL": "http://api.test:8080",
+        "CLUSTER": "c1",
+        "SEGMENT_TYPE": "HC",
+        "DEADLINE_SECONDS": "5",
+    }
+    r = subprocess.run(["sh", str(SCRIPT)], env=env, capture_output=True, text=True)
+    assert r.returncode == 1
+    assert r.stderr.count("attempt ") == 1  # 0s elapsed + 5s delay reaches the 5s deadline
+
+
+def test_the_job_deadline_outlasts_the_script_deadline():
+    job = _hook(_render())
+    script_default = 3300
+    assert job["spec"]["activeDeadlineSeconds"] > script_default

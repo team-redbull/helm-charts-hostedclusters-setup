@@ -13,8 +13,13 @@
          -> release-segment
 
        Not an Argo CD notification: `on-deleted` fires when deletion STARTS,
-       before any of that, and is fire-and-forget. A failed hook keeps the
-       Application with a DeletionError condition and is retried — visible.
+       before any of that, and is fire-and-forget.
+
+       Argo CD holds the Application while this Job RUNS, but treats a FAILED
+       Job as complete and finishes the deletion without retrying (verified on
+       GitOps 1.18 / Argo CD 3.1). So the script retries the POST itself, for up
+       to an hour; a final failure leaves the Failed Job as the record, with the
+       request to send by hand at the end of its log.
 
        Gated on release_segment.workflows_api_url and clusterName, never on
        dhcp_values: at PostDelete time the cluster's values file is already gone
@@ -35,18 +40,21 @@ metadata:
   annotations:
     argocd.argoproj.io/hook: PostDelete
     {{- /* HookSucceeded: a Job that did its work is cleaned up with the
-           Application. BeforeHookCreation: a FAILED Job stays for inspection and
-           is replaced when Argo CD retries the hook, instead of colliding with
-           it by name. */}}
+           Application. A FAILED Job stays — it is the only record that the
+           segment was not released. BeforeHookCreation: a later Application of
+           the same name (the cluster re-created, then deleted again) replaces
+           that leftover instead of colliding with it by name. */}}
     argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
   labels:
     app.kubernetes.io/name: release-segment
     app.kubernetes.io/component: segment-release
     app.kubernetes.io/part-of: hostedclusters-setup
 spec:
-  {{- /* The script retries the POST itself; these cover the pod dying. */}}
+  {{- /* The script retries the POST itself for up to DEADLINE_SECONDS (3300);
+         backoffLimit covers the pod dying, and activeDeadlineSeconds bounds the
+         whole Job — and so how long the Application can sit in deletion. */}}
   backoffLimit: 2
-  activeDeadlineSeconds: 300
+  activeDeadlineSeconds: 3600
   template:
     metadata:
       labels:
