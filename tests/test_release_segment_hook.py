@@ -122,8 +122,10 @@ def test_pod_is_locked_down_like_the_day2_job():
 # success; a 4xx/5xx makes it exit 1 with "server returned error: HTTP/1.1 ...".
 
 _WGET_OK = """#!/bin/sh
+echo 'Connecting to api.test:8080 (10.0.0.1:8080)' >&2
 echo '  HTTP/1.1 202 Accepted' >&2
 echo '{"workflow_id":"release-segment-HC-c1","run_id":"r"}'
+echo 'written to stdout' >&2
 """
 _WGET_FAIL = """#!/bin/sh
 echo '  HTTP/1.1 {code} X' >&2
@@ -154,6 +156,8 @@ def test_202_is_success(tmp_path):
     r = _run_script(tmp_path, _WGET_OK)
     assert r.returncode == 0, r.stderr
     assert "release-segment started" in r.stdout
+    # The run's id, not wget's trailing "written to stdout".
+    assert "release-segment-HC-c1" in r.stdout
 
 
 def test_409_is_success(tmp_path):

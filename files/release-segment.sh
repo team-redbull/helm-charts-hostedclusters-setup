@@ -64,7 +64,8 @@ while :; do
 
     case "$status" in
         202)
-            echo "release-segment started for $CLUSTER ($SEGMENT_TYPE): $(printf '%s\n' "$out" | tail -n 1)"
+            id=$(printf '%s\n' "$out" | sed -n 's/.*"workflow_id": *"\([^"]*\)".*/\1/p' | head -n 1)
+            echo "release-segment started for $CLUSTER ($SEGMENT_TYPE): ${id:-?} — status at GET /workflows/runs/${id:-<id>}"
             exit 0
             ;;
         409)
