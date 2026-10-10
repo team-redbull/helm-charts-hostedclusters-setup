@@ -247,3 +247,27 @@ day2:
     # the clone fails on certificate verification, i.e. the signing CA is not in
     # the image's trust store.
     insecureSkipTLSVerify: false
+
+# Releasing this hosted cluster's VLAN segment when the cluster is deleted.
+#
+# templates/release-segment-hook.yaml is an Argo CD PostDelete hook: once the
+# Application and everything it managed are gone, it POSTs this cluster's name
+# to the orchestrator's release-segment workflow, which deletes the DHCP scope
+# if it survived and returns the segment to the Segments Manager's pool.
+#
+# Base-chart values on purpose, never the values repo: at PostDelete time the
+# cluster's values file is already deleted, so a key set there no longer exists
+# when the hook renders. An empty workflows_api_url renders no hook at all.
+release_segment:
+  # The orchestrator API. In-cluster Service address here: the hosted-cluster
+  # Applications run on the same cluster as the orchestrator, and its Route has
+  # no auth to add. The air-gapped copy, whose Applications live on each MCE's
+  # Argo CD, needs the hub's Route instead (and insecureSkipTLSVerify: true for
+  # its ingress CA).
+  workflows_api_url: http://workflows-orchestrator-api.redbull-workflows.svc:8080
+
+  # Skip TLS verification on the POST. false: the Service above is plain http.
+  insecureSkipTLSVerify: false
+
+  # The segment type to release. HC is the only type day1 allocates.
+  type: HC

@@ -98,7 +98,8 @@ def _rendered_body(values: str, cluster_name: str | None = None) -> dict:
         cmd += ["--set-string", f"clusterName={cluster_name}"]
     result = subprocess.run(cmd, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    cr = next(iter(yaml.safe_load_all(result.stdout)))
+    # By kind: the chart also renders Jobs, which Helm sorts ahead of a CRD's kind.
+    cr = next(d for d in yaml.safe_load_all(result.stdout) if d and d.get("kind") == "Request")
     # payload.body is a JSON *string* — provider-http types the field as one, and
     # the API server rejects an object outright — so parse before comparing.
     return json.loads(cr["spec"]["forProvider"]["payload"]["body"])

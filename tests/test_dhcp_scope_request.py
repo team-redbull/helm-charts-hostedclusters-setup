@@ -60,10 +60,24 @@ def _cluster_name(name: str) -> list[str]:
     return ["--set-string", f"clusterName={name}"]
 
 
+def _kinds(rendered: str) -> list[str]:
+    """Kinds rendered, minus the release-segment PostDelete hook — a Job every
+    hcAppset render carries, unrelated to whether a Request renders."""
+    return [
+        d["kind"]
+        for d in yaml.safe_load_all(rendered)
+        if d
+        and d["metadata"].get("labels", {}).get("app.kubernetes.io/component")
+        != "segment-release"
+    ]
+
+
 def _parse_cr(rendered: str) -> dict:
-    """Parse the first YAML document from rendered output."""
-    docs = list(yaml.safe_load_all(rendered))
-    return docs[0]
+    """The Request CR from rendered output. Selected by kind, not position:
+    the chart also renders Jobs (the day2 registration, the release-segment
+    PostDelete hook), and Helm sorts known kinds like Job ahead of a CRD's."""
+    docs = [d for d in yaml.safe_load_all(rendered) if d]
+    return next((d for d in docs if d.get("kind") == "Request"), docs[0] if docs else None)
 
 
 # Minimal valid values. dhcp_values comes entirely from here: the chart's own
@@ -418,7 +432,7 @@ class TestDhcpOptOutGate:
         """The nil guard. Without the .Values.dhcp_values half of the gate this
         aborts with "nil pointer evaluating interface {}.network"."""
         values = "dhcp_api:\n  url: https://dhcp-api.lab.local\n"
-        assert _helm_template(values, _cluster_name("cluster-a")).strip() == ""
+        assert _kinds(_helm_template(values, _cluster_name("cluster-a"))) == []
 
     def test_inherited_globals_without_network_render_nothing(self):
         """sites/configValues.yaml gives every cluster a dhcp_values block, so
@@ -438,7 +452,7 @@ class TestDhcpOptOutGate:
                 reservePercent: 5
                 maxClientLeadTimeMinutes: 60
         """)
-        assert _helm_template(values, _cluster_name("cluster-a")).strip() == ""
+        assert _kinds(_helm_template(values, _cluster_name("cluster-a"))) == []
 
     def test_network_present_without_scope_name_renders_a_request(self):
         """The case the whole change exists for: the gate must not depend on

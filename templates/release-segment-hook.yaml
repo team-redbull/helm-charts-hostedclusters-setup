@@ -1,0 +1,95 @@
+{{- /* Gives this hosted cluster's VLAN segment back to the pool once the cluster
+       is gone, by starting the orchestrator's release-segment workflow.
+
+       An Argo CD PostDelete hook, and that is the whole design: Argo CD creates
+       this Job only when the Application is DELETED, and only after every
+       resource the Application managed is gone. It is never applied by a sync.
+       Deleting the cluster's values file is what deletes the Application (the
+       ApplicationSet's files generator), so the order is fixed:
+
+         file deleted -> Application deleted -> its resources deleted (the
+         Request, whose deletion makes provider-http delete the DHCP scope; in
+         the air-gapped copy also the HostedCluster and NodePool) -> this hook
+         -> release-segment
+
+       Not an Argo CD notification: `on-deleted` fires when deletion STARTS,
+       before any of that, and is fire-and-forget.
+
+       Argo CD holds the Application while this Job RUNS, but treats a FAILED
+       Job as complete and finishes the deletion without retrying (verified on
+       GitOps 1.18 / Argo CD 3.1). So the script retries the POST itself, for up
+       to an hour; a final failure leaves the Failed Job as the record, with the
+       request to send by hand at the end of its log.
+
+       Gated on release_segment.workflows_api_url and clusterName, never on
+       dhcp_values: at PostDelete time the cluster's values file is already gone
+       (ignoreMissingValueFiles), so nothing it set exists any more. clusterName
+       survives because hcAppset passes it as a parameter — every Application
+       it generates has one, so the clusterName gate only skips bare renders
+       (`helm template` by hand), which have no cluster to release.
+
+       A bridge: a deprovision-cluster workflow will start release-segment as a
+       child once it exists, and this template is deleted then. */}}
+{{- $cfg := .Values.release_segment | default dict }}
+{{- $cluster := .Values.clusterName | default "" }}
+{{- if and $cfg.workflows_api_url $cluster }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "release-segment-%s" $cluster | trunc 63 | trimSuffix "-" }}
+  annotations:
+    argocd.argoproj.io/hook: PostDelete
+    {{- /* HookSucceeded: a Job that did its work is cleaned up with the
+           Application. A FAILED Job stays — it is the only record that the
+           segment was not released. BeforeHookCreation: a later Application of
+           the same name (the cluster re-created, then deleted again) replaces
+           that leftover instead of colliding with it by name. */}}
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+  labels:
+    app.kubernetes.io/name: release-segment
+    app.kubernetes.io/component: segment-release
+    app.kubernetes.io/part-of: hostedclusters-setup
+spec:
+  {{- /* The script retries the POST itself for up to DEADLINE_SECONDS (3300);
+         backoffLimit covers the pod dying, and activeDeadlineSeconds bounds the
+         whole Job — and so how long the Application can sit in deletion. */}}
+  backoffLimit: 2
+  activeDeadlineSeconds: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: release-segment
+        app.kubernetes.io/component: segment-release
+    spec:
+      restartPolicy: Never
+      {{- /* This pod talks to the orchestrator API, never to the Kubernetes API. */}}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: release-segment
+          {{- /* The day2 registration Job's image, on purpose: it is already
+                 mirrored inside the air-gap, and busybox wget is all this needs. */}}
+          image: "alpine/git:2.52.0"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          env:
+            - name: WORKFLOWS_API_URL
+              value: {{ $cfg.workflows_api_url | quote }}
+            - name: CLUSTER
+              value: {{ $cluster | quote }}
+            - name: SEGMENT_TYPE
+              value: {{ $cfg.type | default "HC" | quote }}
+            - name: INSECURE_SKIP_TLS_VERIFY
+              value: {{ ternary "true" "false" (eq (toString $cfg.insecureSkipTLSVerify) "true") | quote }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+{{ .Files.Get "files/release-segment.sh" | indent 14 }}
+{{- end }}
