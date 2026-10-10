@@ -86,8 +86,15 @@ def _render_fails(*extra: str) -> str:
 
 
 def _job(rendered: str) -> dict | None:
+    """The day2 registration Job — by its component label, because the chart
+    also renders the release-segment PostDelete hook, another Job."""
     for doc in yaml.safe_load_all(rendered):
-        if doc and doc.get("kind") == "Job":
+        if (
+            doc
+            and doc.get("kind") == "Job"
+            and doc["metadata"]["labels"].get("app.kubernetes.io/component")
+            == "day2-registration"
+        ):
             return doc
     return None
 
@@ -312,4 +319,5 @@ def test_cluster_without_dhcp_values_still_registers():
     that wants no DHCP scope still belongs in day2."""
     rendered = _render(*_sigs("redbull"))
     kinds = [d["kind"] for d in yaml.safe_load_all(rendered) if d]
-    assert kinds == ["Job"]
+    assert "Request" not in kinds
+    assert _job(rendered) is not None

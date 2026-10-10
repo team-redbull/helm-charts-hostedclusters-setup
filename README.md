@@ -80,6 +80,38 @@ Recovering a failed Job, and everything that differs in the air-gapped copy
 (repo URLs, image, Secret scope, TLS), is in `APPLY-DAY2-COPY.md` in
 `gitops-day1/argocd-platform`.
 
+## Releasing the segment when the cluster is deleted
+
+`templates/release-segment-hook.yaml` is an **Argo CD PostDelete hook**: Argo CD
+creates it only when the cluster's Application is deleted, and only after every
+resource the Application managed is gone. It POSTs the cluster's name to the
+orchestrator's `release-segment` workflow, which deletes the cluster's DHCP scope
+if it survived and gives the VLAN segment back to the Segments Manager's pool.
+
+```
+values file deleted ──► Application deleted ──► Request deleted (scope DELETE)
+                                                  │  [air-gap: HostedCluster, NodePool]
+                                                  ▼
+                        PostDelete hook ──POST──► release-segment ──► segment Available
+```
+
+- **202 or 409 is success.** 409 means a run for the cluster is already going.
+  The Job starts the run and does not wait for it.
+- **Anything else fails the Job** after a few retries. Argo CD then keeps the
+  Application with a `DeletionError` condition and retries the hook on its next
+  reconcile. Fix the API and it converges, or delete the hook Job by hand to let
+  the deletion finish and POST the release yourself.
+- **It renders with no values file**, from `clusterName` alone, because at
+  PostDelete time the cluster's file is already deleted. It is never gated on
+  `dhcp_values`. An empty `release_segment.workflows_api_url` renders no hook.
+- **Air-gap deltas:** the Applications live on each MCE's Argo CD, so
+  `workflows_api_url` is the hub's Route and `insecureSkipTLSVerify: true`.
+- **A bridge.** A deprovision-cluster workflow will start release-segment itself
+  once it exists, and this template is deleted then.
+
+Not an Argo CD notification: `on-deleted` fires when deletion *starts*, before
+the resources are gone, and is fire-and-forget.
+
 ## Values
 
 The four values-repo files are layered on top of this chart's `values.yaml`, in
@@ -182,7 +214,7 @@ together, and `sync_chart.py` is gone.
 
 ```bash
 pip install -r requirements.txt
-pytest -q          # 53 tests: 45 rendering + 8 payload parity
+pytest -q          # rendering, payload parity, the day2 Job and the release hook
 helm lint .
 ```
 
