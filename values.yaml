@@ -294,7 +294,7 @@ release_segment:
 #   cpoRepo: openshift/release               CPO image <imageHc|imagePath>/<cpoRepo>:<tag>-hypershift;
 #                                            "" renders no control-plane-operator annotation
 #   kubevirtInfra: external                  platform kubevirt only; local = VMs on this MCE
-#   baseDomain: example.internal             "" lets HyperShift derive it (KubeVirt)
+#   baseDomain: example.internal             "" renders no dns: HyperShift derives it (KubeVirt)
 #   clusterNetworkCidr / serviceNetworkCidr  the GitLab copy's are sanitized here
 #   pullSecretName                           openshift-<clusterName>-pull-secret
 #   sshKeySecretName                         openshift-<clusterName>-ssh-key; "" = none

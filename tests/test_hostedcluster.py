@@ -15,7 +15,8 @@ of this chart. Three properties matter, and each fails quietly if broken:
    which drop empty lists and empty optional fields; Argo CD then reports the
    HostedCluster OutOfSync for ever, and the upgrade workflow refuses to sync an
    Application with anything out of sync it did not expect (an empty
-   imageContentSources was exactly such a field).
+   imageContentSources was exactly such a field, and so was baseDomain: "",
+   which HyperShift fills in for a KubeVirt cluster).
 
 Requirements: helm CLI on PATH (module-level skip marker).
 """
@@ -168,7 +169,14 @@ def test_lab_release_images_come_from_the_public_repository_without_a_cpo_image(
 def test_lab_kubevirt_runs_on_the_mce_itself():
     hc = _hc(_lab())
     assert hc["spec"]["platform"] == {"kubevirt": {}, "type": "KubeVirt"}
-    assert hc["spec"]["dns"] == {"baseDomain": ""}
+
+
+def test_an_empty_base_domain_renders_no_dns():
+    # HyperShift derives the domain and writes it into spec.dns.baseDomain; a
+    # rendered "" would be OutOfSync for ever, and syncing it back is refused
+    # ("baseDomain is immutable").
+    assert "dns" not in _hc(_lab())["spec"]
+    assert _hc(_render("production-agent"))["spec"]["dns"] == {"baseDomain": "example.internal"}
 
 
 def test_lab_renders_none_of_the_production_references_it_has_nothing_for():

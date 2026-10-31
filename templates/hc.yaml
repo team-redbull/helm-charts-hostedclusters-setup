@@ -10,7 +10,7 @@
          releaseRepo, cpoRepo         the release layout under imagePath; cpoRepo ""
                                       drops the control-plane-operator annotation
          kubevirtInfra: local         KubeVirt VMs on the MCE itself
-         baseDomain: ""               HyperShift derives it from the MCE's apps domain
+         baseDomain: ""               no dns: HyperShift derives the domain and writes it
          clusterNetworkCidr, serviceNetworkCidr
          pullSecretName, sshKeySecretName, etcdEncryptionKeySecretName,
          additionalTrustBundleName, registriesTrustedCAName
@@ -21,9 +21,12 @@
 
        Only fields HyperShift keeps as written are rendered: it drops empty
        lists (imageContentSources, allowedRegistriesForImport) when it saves
-       the object, and Argo CD would then report the HostedCluster OutOfSync
-       for ever — which the upgrade workflow reads as someone else's pending
-       change and refuses to sync. */}}
+       the object, and fills in an empty baseDomain, and Argo CD would then
+       report the HostedCluster OutOfSync for ever — which the upgrade
+       workflow reads as someone else's pending change and refuses to sync.
+       (What HyperShift ADDS to fields the chart leaves out — generateID,
+       secretEncryption for KubeVirt, sshKey: {} — is no difference to Argo
+       CD.) */}}
 {{- if include "hc.enabled" . }}
 {{- $cn := include "hc.clusterName" . }}
 {{- $mastertag := include "hc.releaseTag" .Values.mastertag -}}
@@ -91,8 +94,16 @@ spec:
   {{- end }}
   release:
     image: "{{ $base }}/{{ $releaseRepo }}:{{ $mastertag }}"
+  {{- /* An empty baseDomain renders no dns at all. HyperShift then derives the
+         domain (KubeVirt: from the MCE's apps domain) and WRITES it into
+         spec.dns.baseDomain (hostedcluster_controller.go,
+         reconcileKubevirtPlatformDefaultSettings). A rendered "" would differ
+         from that for ever, and the next sync would try to set it back, which
+         the CRD refuses: "baseDomain is immutable" once set. */}}
+  {{- with $baseDomain }}
   dns:
-    baseDomain: {{ $baseDomain | quote }}
+    baseDomain: {{ . | quote }}
+  {{- end }}
   controllerAvailabilityPolicy: {{ .Values.controllerAvailabilityPolicy | default "HighlyAvailable" }}
   etcd:
     managed:

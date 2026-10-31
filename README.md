@@ -249,7 +249,7 @@ lists them):
 | `releaseRepo` | `openshift/release-images` | `ocp-release` (with `imagePath: quay.io/openshift-release-dev`) |
 | `cpoRepo` | `openshift/release` | `""`: no control-plane-operator annotation, the payload's own CPO |
 | `kubevirtInfra` | `external` (infra kubeconfig, NAD networks) | `local`: VMs on the MCE, `platform.kubevirt: {}` |
-| `baseDomain` | `example.internal` | `""`: HyperShift derives it from the MCE's apps domain |
+| `baseDomain` | `example.internal` | `""`: no `dns` rendered; HyperShift derives the domain from the MCE's apps domain |
 | `clusterNetworkCidr`, `serviceNetworkCidr` | the sanitized placeholders | clear of the MCE's own networks |
 | `pullSecretName` | `openshift-<clusterName>-pull-secret` | |
 | `sshKeySecretName`, `etcdEncryptionKeySecretName` | `openshift-<clusterName>-ssh-key`, `-etcd-encryption-key` | `""`: none |
@@ -269,7 +269,12 @@ fields. A field rendered empty, such as `imageContentSources: []`, would then di
 from the cluster for ever: Argo CD reports the HostedCluster OutOfSync, and the
 upgrade workflow refuses to sync an Application with anything out of sync it did not
 expect. So an empty `imageContentSources` or `allowedRegistriesForImport` is left out,
-and so is the `image` block when it would hold nothing.
+and so is the `image` block when it would hold nothing. An empty `baseDomain` renders
+no `dns` at all: for KubeVirt HyperShift writes the domain it derives into
+`spec.dns.baseDomain`, and a rendered `""` would not only differ for ever, the next
+sync would be refused ("baseDomain is immutable"). Fields HyperShift fills in that the
+chart leaves out (`generateID`, a generated `secretEncryption` for KubeVirt) are no
+difference to Argo CD.
 
 ## Templates and tests
 
