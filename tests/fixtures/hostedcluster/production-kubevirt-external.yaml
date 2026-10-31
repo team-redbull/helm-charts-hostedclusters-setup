@@ -1,0 +1,49 @@
+# A production-shaped KubeVirt cluster, synthetic: VMs on another cluster reached
+# through the infra-kubeconfig Secret, each NodePool on a VLAN's
+# NetworkAttachmentDefinition. tests/golden/production-kubevirt-external.yaml is
+# what the GitLab copy of the chart renders from it.
+hostedCluster:
+  enabled: true
+platform: kubevirt
+# sites/configValues.yaml always sets these two; the GitLab copy fails to render
+# without registries.
+defaultImageRegistries:
+  - domainName: registry-internal
+    insecure: false
+defaultImageContentSources:
+  - mirrors:
+      - registry-internal/openshift-release/openshift/release-images
+    source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+etcd:
+  size: 16Gi
+  storageClassName: powerflex-sp2
+imagePath: registry-internal/openshift-release
+imageHc: registry-internal/openshift-release-hc
+mastertag: 4.22.8
+disableIdmsMerge: true
+imageContentSources:
+  - mirrors:
+      - registry-internal/openshift-release/openshift/release-images
+    source: quay.io/openshift-release-dev/ocp-release
+disableOcpadmin: true
+disableAPIDNS: true
+disableProxy: true
+serviceType: NodePort
+baseDomain: apps.example.internal
+controllerAvailabilityPolicy: SingleReplica
+allowDeletion: "true"
+vlanId: 512
+nodepool:
+  - name: kv-workers
+    replicas: 2
+    cores: 8
+    memory: 32Gi
+    upgradeType: Replace
+    replace:
+      rollingUpdate:
+        maxSurge: 2
+    autoRepair: true
+  - name: kv-workers-b
+    vlan: 513
+    attachDefaultNetwork: true
+    workertag: 4.22.7

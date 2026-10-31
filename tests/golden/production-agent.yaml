@@ -1,0 +1,222 @@
+# GOLDEN: what the air-gapped GitLab copy of this chart (templates/hc.yaml and
+# nodepool.yaml) renders from tests/fixtures/hostedcluster/production-agent.yaml with
+# clusterName=tenant-a. Rendered 2026-10-31 from a sanitized export of that copy.
+# Never regenerate it from THIS chart: it is the reference this chart's output is
+# compared with. Change it only together with the GitLab copy.
+---
+# Source: hostedclusters-setup/templates/hc.yaml
+apiVersion: hypershift.openshift.io/v1beta1
+kind: HostedCluster
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    hypershift.openshift.io/control-plane-operator-image: registry-internal/openshift-release/openshift/release:4.20.18-x86_64-hypershift
+  name: openshift-tenant-a
+  namespace: hcp-tenant-a
+  finalizers:
+    - hypershift.openshift.io/finalizer
+  labels:
+spec:
+  fips: false
+  release:
+    image: "registry-internal/openshift-release/openshift/release-images:4.20.18-x86_64"    
+  dns:
+    baseDomain: example.internal
+  controllerAvailabilityPolicy: HighlyAvailable
+  etcd:
+    managed:
+      storage:
+        persistentVolume:
+          size: 8Gi
+          storageClassName: powerflex-sp1
+        type:  PersistentVolume
+    managementType: Managed
+  infrastructureAvailabilityPolicy: HighlyAvailable  
+  imageContentSources:
+    - mirrors:
+      - registry-internal/openshift-release/openshift/release-images
+      - registry-internal/openshift-release/openshift/release
+      source: quay.io/openshift-release-dev/ocp-release
+    - mirrors:
+      - registry-internal/openshift-release/openshift/release-images
+      - registry-internal/openshift-release/openshift/release
+      source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+    - mirrors:
+      - registry-internal/operators
+      - registry-internal/operators-extra
+      source: registry.redhat.io
+  platform:
+    agent:
+      agentNamespace: inventory
+    type: Agent
+  additionalTrustBundle:
+    name: user-ca-bundle
+  secretEncryption:
+    aescbc:
+      activeKey:
+        name: openshift-tenant-a-etcd-encryption-key
+    type: aescbc
+  networking:
+    clusterNetwork:
+      - cidr: 192.0.2.2/14
+    networkType: OVNKubernetes
+    serviceNetwork:
+      - cidr: 192.0.2.3/16
+  pullSecret:
+    name: openshift-tenant-a-pull-secret # must much the pull secret been created for the cluster
+  configuration:
+    scheduler:
+      mastersSchedulable: false
+      profile: HighNodeUtilization
+    proxy:
+      trustedCA:
+        name: custom-ca        
+    operatorhub:
+      disableAllDefaultSources: true   
+    apiServer:
+      audit:
+        profile: Default
+      servingCerts:
+        namedCertificates:
+          - names:
+              - oauth-hcp-tenant-a-openshift-tenant-a.apps.cluster-mce-a.example.internal
+            servingCertificate:
+              name: oauth-tls          
+          - names:
+              - api.openshift-tenant-a.example.internal
+            servingCertificate:
+              name: api-tls
+    oauth:
+      identityProviders:
+      - ldap:
+          attributes:
+            email:
+            - mail
+            id:
+            - sAMAccountName
+            name:
+            - cn
+            preferredUsername:
+            - sAMAccountName
+          bindDN: 977SVN@example.internal
+          bindPassword:
+            name: openshift-tenant-a-ldap-bind-password
+          insecure: true
+          url: ldap://ldap.example.internal:389/DC=example,DC=internal?sAMAccountName?
+        mappingMethod: claim
+        name: ldap-provider
+        type: LDAP          
+      - htpasswd:
+          fileData:
+            name: openshift-tenant-a-htpasswd-ocpadmin
+        mappingMethod: claim
+        name: htpasswd
+        type: HTPasswd    
+    image:
+      additionalTrustedCA:
+        name: custom-registries-config
+      allowedRegistriesForImport:
+      - domainName: registry-internal
+        insecure: false
+      - domainName: quay.io
+        insecure: false
+  issuerURL: 'https://kubernetes.default.svc'
+  sshKey:
+    name: openshift-tenant-a-ssh-key
+  autoscaling: {}
+  kubeAPIServerDNSName: api.openshift-tenant-a.example.internal  
+  olmCatalogPlacement: management
+  services:
+    - service: APIServer
+      servicePublishingStrategy:
+        type: LoadBalancer
+    - service: OAuthServer
+      servicePublishingStrategy:
+        type: Route
+    - service: Konnectivity
+      servicePublishingStrategy:
+        type: Route
+    - service: Ignition
+      servicePublishingStrategy:
+        type: Route
+
+---
+# Source: hostedclusters-setup/templates/nodepool.yaml
+apiVersion: hypershift.openshift.io/v1beta1
+kind: NodePool
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  name: tenant-a-zone-a
+  namespace: hcp-tenant-a
+  finalizers:
+    - hypershift.openshift.io/finalizer
+  labels:
+    allowDeletion: "false"
+    maxReplicas: "4"
+    minReplicas: "2"
+spec:
+  nodeDrainTimeout: 0s
+  config:
+  - name: nm-conf-tenant-a
+  - name: worker-kubeletconfig
+  arch: amd64
+  clusterName: openshift-tenant-a
+  management:
+    autoRepair: false
+    
+    upgradeType: InPlace
+    
+    inPlace:
+      maxUnavailable: 100%
+  platform:
+    agent:
+      agentLabelSelector:
+        matchLabels:
+          infraenvs.agent-install.openshift.io: dell-r660-128c-1024gb
+    type: Agent
+  release:
+    image: "registry-internal/openshift-release/openshift/release-images:4.20.18-x86_64"
+  replicas: 3
+  nodeLabels:
+    topology.kubernetes.io/zone: "zone-a"
+  tuningConfig:
+    - name: tuned-tenant-a
+  tuningConfig:
+    - name: tuned-tenant-a
+
+
+---
+# Source: hostedclusters-setup/templates/nodepool.yaml
+apiVersion: hypershift.openshift.io/v1beta1
+kind: NodePool
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  name: tenant-a-hp-dl380-64c-512gb
+  namespace: hcp-tenant-a
+  finalizers:
+    - hypershift.openshift.io/finalizer
+  labels:
+    allowDeletion: "false"
+    maxReplicas: "2"
+    minReplicas: "1"
+spec:
+  nodeDrainTimeout: 30m
+  arch: amd64
+  clusterName: openshift-tenant-a
+  management:
+    autoRepair: false
+    
+    upgradeType: InPlace
+    
+  platform:
+    agent:
+      agentLabelSelector:
+        matchLabels:
+          infraenvs.agent-install.openshift.io: hp-dl380-64c-512gb
+    type: Agent
+  release:
+    image: "registry-internal/openshift-release/openshift/release-images:4.20.18-x86_64"
+  replicas: 2
+

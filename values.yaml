@@ -271,3 +271,61 @@ release_segment:
 
   # The segment type to release. HC is the only type day1 allocates.
   type: HC
+
+# The hosted cluster itself: the HostedCluster, its NodePools, their namespaces and
+# the ConfigMaps the NodePools reference (templates/hc.yaml, nodepool.yaml,
+# namespace.yaml, nodepool-configmaps.yaml).
+#
+# Ported from the air-gapped GitLab copy of this chart, which has always rendered
+# them; until now this copy carried only the DHCP, day2 and release-segment pieces
+# (README, "Convergence"). Off by default so that every cluster file already in the
+# values repo — slim ones, a dhcp_values block and a mastertag — renders exactly
+# what it rendered before. Turn it on at whichever layer of the values repo owns the
+# decision: sites/configValues.yaml for a whole platform, an MCE's values.yaml for
+# one MCE.
+#
+# The keys the templates read are top-level, as in the GitLab copy, so a production
+# values file renders the same HostedCluster and NodePools here (pinned by
+# tests/test_hostedcluster.py). Defaults: the GitLab chart's own values.yaml below,
+# and in the templates the values the GitLab copy hardcodes. The keys added here,
+# each defaulting to the GitLab behaviour while absent:
+#
+#   releaseRepo: openshift/release-images   release images at <imagePath>/<releaseRepo>:<tag>
+#   cpoRepo: openshift/release               CPO image <imageHc|imagePath>/<cpoRepo>:<tag>-hypershift;
+#                                            "" renders no control-plane-operator annotation
+#   kubevirtInfra: external                  platform kubevirt only; local = VMs on this MCE
+#   baseDomain: example.internal             "" lets HyperShift derive it (KubeVirt)
+#   clusterNetworkCidr / serviceNetworkCidr  the GitLab copy's are sanitized here
+#   pullSecretName                           openshift-<clusterName>-pull-secret
+#   sshKeySecretName                         openshift-<clusterName>-ssh-key; "" = none
+#   etcdEncryptionKeySecretName              openshift-<clusterName>-etcd-encryption-key; "" = none
+#   additionalTrustBundleName                user-ca-bundle; "" = none
+#   registriesTrustedCAName                  custom-registries-config; "" = none
+#   disableLdap                              false; the LDAP identity provider
+#   services                                 unset = the GitLab branches (serviceType)
+#   pausedUntil                              unset; "true" or an RFC 3339 time pauses the
+#                                            HostedCluster and every NodePool (upgrade abort)
+#
+# None of them is set here on purpose: an empty value is a choice ("no SSH key"),
+# and a key set in this file could not be removed by a values file. This chart
+# renders NO Secret: the pull secret, SSH key, etcd encryption key and identity
+# provider Secrets are referenced by name and must exist in hcp-<clusterName>.
+hostedCluster:
+  enabled: false
+
+# From the GitLab copy's values.yaml. Read only with hostedCluster.enabled.
+#
+# Namespace the hosted cluster's Agents come from (spec.platform.agent.agentNamespace).
+hostInventory: inventory
+scheduler:
+  config:
+    mastersSchedulable: false
+    profile: HighNodeUtilization
+imageContentSources: []
+extraImageRegistries: []
+ldapUrl: ldap.example.internal
+
+# templates/capi-kyverno-policy.yaml: needs Kyverno on the MCE, so it is a second
+# switch. The GitLab copy renders it unconditionally.
+kyverno:
+  enabled: false

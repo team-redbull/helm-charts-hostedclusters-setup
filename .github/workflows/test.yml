@@ -43,3 +43,11 @@ jobs:
         # Catches malformed Chart.yaml and values.yaml that still happen to
         # render — helm template alone does not check chart metadata.
         run: helm lint .
+
+      - name: Lint the chart with a hosted cluster
+        # hostedCluster.enabled is off by default, so the step above lints no
+        # HostedCluster or NodePool. Lint every hosted-cluster fixture as well.
+        run: |
+          for values in tests/fixtures/hostedcluster/*.yaml; do
+            helm lint . --set-string clusterName=tenant-a -f "$values"
+          done

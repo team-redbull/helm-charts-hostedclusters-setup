@@ -1,0 +1,32 @@
+{{- /* The ConfigMaps NodePools reference: nodepool[].configs (MachineConfigs,
+       KubeletConfigs; the values repo's CI renders them into mcConfigMap) and
+       nodepool[].tuningConfig (tuningConfigmap). Ported from the air-gapped
+       GitLab copy's mc-nodepool-configmap.yaml and tune-nodepool-configmap.yaml;
+       an absent list renders nothing. */}}
+{{- if include "hc.enabled" . }}
+{{- $clusterName := include "hc.clusterName" . }}
+{{- range .Values.mcConfigMap }}
+---
+kind: ConfigMap
+apiVersion: v1
+data:
+  config: |
+{{ .config | indent 4 }}
+metadata:
+  name: {{ .name }}
+  namespace: hcp-{{ $clusterName }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+{{- end }}
+{{- range .Values.tuningConfigmap }}
+---
+kind: ConfigMap
+apiVersion: v1
+data:
+  tuning: |
+{{ .tuning | indent 4 }}
+metadata:
+  name: {{ .name }}
+  namespace: hcp-{{ $clusterName }}
+{{- end }}
+{{- end }}

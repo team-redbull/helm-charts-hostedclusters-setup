@@ -1,0 +1,41 @@
+{{- /* Raises the CAPI provider pods' limits in the control-plane namespace past
+       what the HyperShift operator sets, at admission (it reconciles the
+       Deployment back otherwise). Ported from the air-gapped GitLab copy.
+
+       Needs Kyverno, so it renders only with kyverno.enabled as well as
+       hostedCluster.enabled: on a cluster without the kyverno.io CRDs the
+       Policy would fail every sync of the Application. */}}
+{{- if and (include "hc.enabled" .) (.Values.kyverno | default dict).enabled }}
+{{- $cn := include "hc.clusterName" . }}
+apiVersion: kyverno.io/v1
+kind: Policy
+metadata:
+  annotations:
+    policies.kyverno.io/description: This policy intercepts the creation of CAPI provider pods in HyperShift namespaces and injects higher memory limits to prevent OOMKilled issues, bypassing the HyperShift Operator's strict Deployment reconciliation.
+    policies.kyverno.io/title: Bump CAPI Provider Limits
+  name: mutate-hypershift-capi-resources
+  namespace: hcp-{{ $cn }}-openshift-{{ $cn }}
+spec:
+  admission: true
+  background: false
+  rules:
+    - match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              names:
+                - capi-provider-*
+      mutate:
+        patchStrategicMerge:
+          spec:
+            containers:
+              - (name): '*'
+                resources:
+                  limits:
+                    cpu: "5"
+                    memory: 5Gi
+      name: bump-capi-memory
+      skipBackgroundRequests: true
+  validationFailureAction: Audit
+{{- end }}

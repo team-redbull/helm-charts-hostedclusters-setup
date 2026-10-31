@@ -1,0 +1,143 @@
+{{- /* One NodePool per nodepool[] entry, in hcp-<clusterName>.
+
+       Ported from the air-gapped GitLab copy of this chart (templates/
+       nodepool.yaml); with the production values it renders the same objects.
+       Added: pausedUntil (as on the HostedCluster), and for KubeVirt the root
+       volume's storageClass and kubevirtInfra: local, where the VMs sit on the
+       MCE's own pod network, so no additionalNetworks / attachDefaultNetwork
+       unless a nodepool sets them. Also fixed: a tuningConfig rendered the key
+       twice. */}}
+{{- if include "hc.enabled" . }}
+{{- $clusterName := include "hc.clusterName" . }}
+{{- $platform := .Values.platform | default "" }}
+{{- $localKubevirt := include "hc.kubevirtLocal" . }}
+{{- $imagePath := .Values.imagePath }}
+{{- $releaseRepo := include "hc.releaseRepo" . }}
+{{- $vlanId := .Values.vlanId }}
+{{- /* Workers follow mastertag unless pinned: a cluster-level workertag pins every
+       nodepool (written only during an upgrade, masters first), a nodepool's own
+       workertag pins just that one. */}}
+{{- $workertag := .Values.workertag | default .Values.mastertag }}
+{{- $pausedUntil := .Values.pausedUntil }}
+{{- /* name -> was it derived; catches two nodepools deriving the same name. */}}
+{{- $seen := dict }}
+{{- range .Values.nodepool }}
+{{- $labels := .labels | default dict }}
+{{- $selector := .agentLabelSelector | default dict }}
+{{- $infraEnv := .infraEnvName | default $selector.nodeLabelValue }}
+{{- if and .infraEnvName $selector.nodeLabelValue (ne .infraEnvName $selector.nodeLabelValue) }}
+{{- fail (printf "nodepool %q: infraEnvName %q and agentLabelSelector.nodeLabelValue %q disagree. Set only infraEnvName." (.name | default .infraEnvName) .infraEnvName $selector.nodeLabelValue) }}
+{{- end }}
+{{- if not (or .name $infraEnv) }}
+{{- fail "every nodepool needs infraEnvName (its name derives as <clusterName>-<infraEnvName>) or an explicit name." }}
+{{- end }}
+{{- $derived := not .name }}
+{{- $name := .name | default (printf "%s-%s" $clusterName $infraEnv) }}
+{{- if and (ne $platform "kubevirt") (not $infraEnv) }}
+{{- fail (printf "nodepool %q: infraEnvName is required on the agent platform; without it the nodepool would claim any free Agent." $name) }}
+{{- end }}
+{{- if and (hasKey $seen $name) (or $derived (get $seen $name)) }}
+{{- fail (printf "nodepool name %q is used twice. A derived name is <clusterName>-<infraEnvName>, so nodepools sharing an infraEnv must each set name." $name) }}
+{{- end }}
+{{- $_ := set $seen $name $derived }}
+{{- /* hasKey rather than default throughout: an explicit 0 or false must win. */}}
+{{- $replicas := ternary .replicas 1 (hasKey . "replicas") | int }}
+{{- $allowDeletion := ternary $labels.allowDeletion "false" (hasKey $labels "allowDeletion") }}
+{{- $maxReplicas := ternary $labels.maxReplicas $replicas (hasKey $labels "maxReplicas") }}
+{{- $minReplicas := ternary $labels.minReplicas (max 0 (sub $replicas 1)) (hasKey $labels "minReplicas") }}
+---
+apiVersion: hypershift.openshift.io/v1beta1
+kind: NodePool
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  name: {{ $name }}
+  namespace: hcp-{{ $clusterName }}
+  finalizers:
+    - hypershift.openshift.io/finalizer
+  labels:
+    {{- /* Label values must be strings. quote makes them so; trimAll keeps the
+           older '''8''' spelling (a value that carries its own quotes) working. */}}
+    allowDeletion: {{ $allowDeletion | toString | trimAll "'" | quote }}
+    maxReplicas: {{ $maxReplicas | toString | trimAll "'" | quote }}
+    minReplicas: {{ $minReplicas | toString | trimAll "'" | quote }}
+spec:
+  nodeDrainTimeout: {{ .nodeDrainTimeout | default "0s" }}
+  {{- if .nodeVolumeDetachTimeout }}
+  nodeVolumeDetachTimeout: {{ .nodeVolumeDetachTimeout }}
+  {{- end }}
+  {{- with $pausedUntil }}
+  pausedUntil: {{ . | toString | quote }}
+  {{- end }}
+  {{- if .configs }}
+  config:
+  {{- range .configs }}
+  - name: {{ .name }}
+  {{- end }}
+  {{- end }}
+  arch: amd64
+  clusterName: openshift-{{ $clusterName }}
+  management:
+    autoRepair: {{ .autoRepair | default "false" }}
+    {{- if .replace }}
+    replace:
+      rollingUpdate:
+        maxSurge: {{ .replace.rollingUpdate.maxSurge | default "1" }}
+        maxUnavailable: {{ .replace.rollingUpdate.maxUnavailable | default "0" }}
+      strategy: {{ .replace.strategy | default "RollingUpdate" }}
+    {{- end }}
+    upgradeType: {{ .upgradeType | default "InPlace" }}
+    {{- if .inPlace }}
+    inPlace:
+      maxUnavailable: {{ .inPlace.maxUnavailable }}
+    {{- end }}
+  platform:
+  {{- if eq $platform "kubevirt" }}
+    kubevirt:
+      {{- if or (not $localKubevirt) .additionalNetwork }}
+      additionalNetworks:
+      - name: {{ .additionalNetwork | default (printf "default/nad-%s" (.vlan | default $vlanId | toString)) }}
+      {{- end }}
+      {{- if or (not $localKubevirt) (hasKey . "attachDefaultNetwork") }}
+      attachDefaultNetwork: {{ .attachDefaultNetwork | default "false" }}
+      {{- end }}
+      compute:
+        cores: {{ .cores | default "6" }}
+        memory: {{ .memory | default "12Gi" }}
+        qosClass: {{ .qosClass | default "Burstable" }}
+      rootVolume:
+        persistent:
+          size: {{ .size | default "32Gi" }}
+          {{- with .storageClass }}
+          storageClass: {{ . }}
+          {{- end }}
+        type: {{ .type | default "Persistent" }}
+    type: KubeVirt
+  {{- else }}
+    agent:
+      agentLabelSelector:
+        matchLabels:
+          {{ $selector.nodeLabelKey | default "infraenvs.agent-install.openshift.io" }}: {{ $infraEnv }}
+    type: Agent
+  {{- end }}
+  release:
+    image: "{{ $imagePath }}/{{ $releaseRepo }}:{{ include "hc.releaseTag" (.workertag | default $workertag) }}"
+  replicas: {{ $replicas }}
+  {{- if .nodeLabels }}
+  nodeLabels:
+  {{- range $key, $value := .nodeLabels }}
+    {{ $key }}: "{{ $value }}"
+  {{- end }}
+  {{- end }}
+  {{- if .tuningConfig }}
+  {{- $config := .tuningConfig }}
+  {{- if kindIs "string" .tuningConfig }}
+  {{-   $config = list .tuningConfig }}
+  {{- end }}
+  tuningConfig:
+  {{- range $item := $config }}
+    - name: {{ $item }}
+  {{- end }}
+  {{- end }}
+{{- end }}
+{{- end }}

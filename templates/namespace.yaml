@@ -1,0 +1,35 @@
+{{- /* The hosted cluster's namespaces: hcp-<clusterName>, which holds the
+       HostedCluster and NodePools, and HyperShift's control-plane namespace
+       hcp-<clusterName>-openshift-<clusterName>, created ahead of HyperShift so
+       that what must exist before the control plane starts (the Kyverno policy
+       in capi-kyverno-policy.yaml, labels from `namespace.labels`) can. HyperShift
+       adopts it.
+
+       Ported from the air-gapped GitLab copy (templates/namespace.yaml). Not
+       ported: its third Namespace, hcp-generic, which holds the owner-record
+       ConfigMaps of owner-configmap.yaml — shared by every cluster on an MCE,
+       so no one cluster's Application should own it. */}}
+{{- if include "hc.enabled" . }}
+{{- $cn := include "hc.clusterName" . }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  creationTimestamp: null
+  name: hcp-{{ $cn }}-openshift-{{ $cn }}
+  {{- if .Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  labels:
+{{ toYaml .Values.namespace.labels | nindent 4 }}
+  {{- end }}
+spec: {}
+status: {}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  creationTimestamp: null
+  name: hcp-{{ $cn }}
+spec: {}
+status: {}
+{{- end }}

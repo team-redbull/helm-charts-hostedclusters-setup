@@ -1,0 +1,283 @@
+{{- /* The HostedCluster: openshift-<clusterName> in hcp-<clusterName>.
+
+       Ported from the air-gapped GitLab copy of this chart
+       (redbull/helm-charts/hostedclusters-setup, templates/hc.yaml). With the
+       production values it renders the same object as that copy; every knob
+       added here defaults to what the GitLab template hardcodes, so a values
+       file that does not set it sees no change (tests/test_hostedcluster.py
+       pins that against output of the GitLab copy). Added, for a lab:
+
+         releaseRepo, cpoRepo         the release layout under imagePath; cpoRepo ""
+                                      drops the control-plane-operator annotation
+         kubevirtInfra: local         KubeVirt VMs on the MCE itself
+         baseDomain: ""               HyperShift derives it from the MCE's apps domain
+         clusterNetworkCidr, serviceNetworkCidr
+         pullSecretName, sshKeySecretName, etcdEncryptionKeySecretName,
+         additionalTrustBundleName, registriesTrustedCAName
+                                      references by name; "" drops the field
+         disableLdap                  next to the existing disableOcpadmin
+         services                     the publishing strategy, verbatim
+         pausedUntil                  HyperShift stops reconciling (upgrade abort, D6)
+
+       Only fields HyperShift keeps as written are rendered: it drops empty
+       lists (imageContentSources, allowedRegistriesForImport) when it saves
+       the object, and Argo CD would then report the HostedCluster OutOfSync
+       for ever — which the upgrade workflow reads as someone else's pending
+       change and refuses to sync. */}}
+{{- if include "hc.enabled" . }}
+{{- $cn := include "hc.clusterName" . }}
+{{- $mastertag := include "hc.releaseTag" .Values.mastertag -}}
+{{- /* The control plane's images: imageHc when set, else imagePath. NodePools
+       always use imagePath (nodepool.yaml). */}}
+{{- $base := .Values.imageHc | default .Values.imagePath }}
+{{- $releaseRepo := include "hc.releaseRepo" . }}
+{{- $cpoRepo := include "hc.orDefault" (list .Values "cpoRepo" "openshift/release") }}
+{{- $ICSdefaults := .Values.defaultImageContentSources | default (list) -}}
+{{- $ICSextras := .Values.imageContentSources | default (list) -}}
+{{- $ICS := concat $ICSdefaults $ICSextras | uniq -}}
+{{- $merged := dict -}}
+{{- range $entry := $ICS }}
+  {{- $src := $entry.source }}
+  {{- if hasKey $merged $src }}
+    {{- $existing := index $merged $src }}
+    {{- $newMirrors := concat $existing.mirrors $entry.mirrors | uniq }}
+    {{- $_ := set $merged $src (dict "source" $src "mirrors" $newMirrors) }}
+  {{- else }}
+    {{- $_ := set $merged $src (dict "source" $src "mirrors" $entry.mirrors) }}
+  {{- end }}
+{{- end }}
+{{- $ICS = list -}}
+{{- range $k := $merged | keys | sortAlpha }}
+  {{- $ICS = append $ICS (index $merged $k) }}
+{{- end }}
+{{- /* disableIdmsMerge: only the cluster's own list, no defaults. */}}
+{{- if .Values.disableIdmsMerge }}
+  {{- $ICS = .Values.imageContentSources | default (list) }}
+{{- end }}
+
+{{- $IRdefaults := .Values.defaultImageRegistries | default (list) -}}
+{{- $IRextras := .Values.extraImageRegistries | default (list) -}}
+{{- $IR := concat $IRdefaults $IRextras -}}
+{{- $etcd := .Values.etcd | default dict }}
+{{- $baseDomain := include "hc.orDefault" (list .Values "baseDomain" "example.internal") }}
+{{- $pullSecret := include "hc.orDefault" (list .Values "pullSecretName" (printf "openshift-%s-pull-secret" $cn)) }}
+{{- $sshKey := include "hc.orDefault" (list .Values "sshKeySecretName" (printf "openshift-%s-ssh-key" $cn)) }}
+{{- $encryptionKey := include "hc.orDefault" (list .Values "etcdEncryptionKeySecretName" (printf "openshift-%s-etcd-encryption-key" $cn)) }}
+{{- $trustBundle := include "hc.orDefault" (list .Values "additionalTrustBundleName" "user-ca-bundle") }}
+{{- $registriesCA := include "hc.orDefault" (list .Values "registriesTrustedCAName" "custom-registries-config") }}
+apiVersion: hypershift.openshift.io/v1beta1
+kind: HostedCluster
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    {{- if $cpoRepo }}
+    hypershift.openshift.io/control-plane-operator-image: {{ $base }}/{{ $cpoRepo }}:{{ $mastertag }}-hypershift
+    {{- end }}
+  name: openshift-{{ $cn }}
+  namespace: hcp-{{ $cn }}
+  finalizers:
+    - hypershift.openshift.io/finalizer
+  labels:
+    {{- if .Values.allowDeletion}}
+    allowDeletion: {{ .Values.allowDeletion | quote }}
+    {{- end}}
+spec:
+  fips: false
+  {{- /* "true" pauses until removed, an RFC 3339 time until then. The upgrade
+         workflow's abort commits it here (DESIGN D6) rather than patching the
+         cluster, so git and the cluster stay equal. */}}
+  {{- with .Values.pausedUntil }}
+  pausedUntil: {{ . | toString | quote }}
+  {{- end }}
+  release:
+    image: "{{ $base }}/{{ $releaseRepo }}:{{ $mastertag }}"
+  dns:
+    baseDomain: {{ $baseDomain | quote }}
+  controllerAvailabilityPolicy: {{ .Values.controllerAvailabilityPolicy | default "HighlyAvailable" }}
+  etcd:
+    managed:
+      storage:
+        persistentVolume:
+          size: {{ $etcd.size | default "8Gi" }}
+          storageClassName: {{ $etcd.storageClassName | default "powerflex-sp1" }}
+        type:  {{ $etcd.type | default "PersistentVolume" }}
+    managementType: {{ .Values.managementType | default "Managed" }}
+  infrastructureAvailabilityPolicy: {{ .Values.infrastructureAvailabilityPolicy | default "HighlyAvailable" }}
+  {{- with $ICS }}
+  imageContentSources:
+{{- toYaml . | nindent 4 }}
+  {{- end }}
+  platform:
+    {{- if eq (.Values.platform | default "") "kubevirt" }}
+    {{- if include "hc.kubevirtLocal" . }}
+    {{- /* VMs on this MCE, in the control-plane namespace: no credentials,
+           and HyperShift fills in the rest (generateID, baseDomainPassthrough
+           when baseDomain is ""). */}}
+    kubevirt: {}
+    {{- else }}
+    kubevirt:
+      credentials:
+        infraKubeConfigSecret:
+          key: kubeconfig
+          name: {{ .Values.infraKubeConfigSecretName | default "infra-kubeconfig" }}
+        infraNamespace: openshift-{{ $cn }}
+    {{- end }}
+    type: KubeVirt
+    {{- else }}
+    agent:
+      agentNamespace: {{ .Values.hostInventory }}
+    type: Agent
+    {{- end }}
+  {{- with $trustBundle }}
+  additionalTrustBundle:
+    name: {{ . }}
+  {{- end }}
+  {{- with $encryptionKey }}
+  secretEncryption:
+    aescbc:
+      activeKey:
+        name: {{ . }}
+    type: aescbc
+  {{- end }}
+  networking:
+    clusterNetwork:
+      - cidr: {{ .Values.clusterNetworkCidr | default "192.0.2.2/14" }}
+    networkType: {{ .Values.networkType | default "OVNKubernetes" }}
+    serviceNetwork:
+      - cidr: {{ .Values.serviceNetworkCidr | default "192.0.2.3/16" }}
+  pullSecret:
+    name: {{ required "pullSecretName cannot be empty: a HostedCluster needs a pull secret." $pullSecret }}
+  configuration:
+{{- if .Values.scheduler }}
+    scheduler:
+{{- with .Values.scheduler.config }}
+{{ toYaml . | indent 6 }}
+{{- end }}
+{{- end }}
+{{- if not .Values.disableProxy }}
+    proxy:
+      trustedCA:
+        name: custom-ca
+{{- end }}
+    operatorhub:
+      disableAllDefaultSources: true
+    {{- if .Values.dns }}
+    {{- if .Values.certificate }}
+    {{- if not .Values.skipApiConfig }}
+    apiServer:
+      audit:
+        profile: Default
+      servingCerts:
+        namedCertificates:
+          - names:
+              - oauth-hcp-{{ $cn }}-openshift-{{ $cn }}.apps.{{ .Values.certificate.mceName }}.{{ .Values.dns.zone }}
+            servingCertificate:
+              name: {{ .Values.certificate.oauthSecretName | default "oauth-tls" }}
+    {{- if not .Values.skipApiCert }}
+          - names:
+              - api.openshift-{{ $cn }}.example.internal
+            servingCertificate:
+              name: api-tls
+    {{- end }}
+    {{- end }}
+    {{- end }}
+    {{- end }}
+    {{- if or (not .Values.disableLdap) (not .Values.disableOcpadmin) }}
+    oauth:
+      identityProviders:
+      {{- if not .Values.disableLdap }}
+      - ldap:
+          attributes:
+            email:
+            - mail
+            id:
+            - sAMAccountName
+            name:
+            - cn
+            preferredUsername:
+            - sAMAccountName
+          bindDN: 977SVN@example.internal
+          bindPassword:
+            name: openshift-{{ $cn }}-ldap-bind-password
+          insecure: true
+          url: ldap://{{ .Values.ldapUrl }}:389/DC=example,DC=internal?sAMAccountName?
+        mappingMethod: claim
+        name: ldap-provider
+        type: LDAP
+      {{- end }}
+      {{- if not .Values.disableOcpadmin }}
+      - htpasswd:
+          fileData:
+            name: openshift-{{ $cn }}-htpasswd-ocpadmin
+        mappingMethod: claim
+        name: htpasswd
+        type: HTPasswd
+      {{- end }}
+    {{- end }}
+    {{- if or $registriesCA $IR }}
+    image:
+      {{- with $registriesCA }}
+      additionalTrustedCA:
+        name: {{ . }}
+      {{- end }}
+      {{- with $IR }}
+      allowedRegistriesForImport:
+{{- toYaml . | nindent 6 }}
+      {{- end }}
+    {{- end }}
+  issuerURL: 'https://kubernetes.default.svc'
+  {{- with $sshKey }}
+  sshKey:
+    name: {{ . }}
+  {{- end }}
+  autoscaling: {}
+  {{- if not .Values.disableAPIDNS }}
+  kubeAPIServerDNSName: api.openshift-{{ $cn }}.example.internal
+  {{- end }}
+  olmCatalogPlacement: {{ .Values.olmCatalogPlacement | default "management" }}
+  services:
+  {{- if .Values.services }}
+{{- toYaml .Values.services | nindent 4 }}
+  {{- else if eq (.Values.serviceType | default "") "NodePort" }}
+    - service: APIServer
+      servicePublishingStrategy:
+        nodePort:
+          address: api.openshift-{{ $cn }}.{{ .Values.baseDomain }}
+        type: NodePort
+    - service: OAuthServer
+      servicePublishingStrategy:
+        nodePort:
+          address: api.openshift-{{ $cn }}.{{ .Values.baseDomain }}
+        type: NodePort
+    - service: OIDC
+      servicePublishingStrategy:
+        nodePort:
+          address: api.openshift-{{ $cn }}.{{ .Values.baseDomain }}
+        type: None
+    - service: Konnectivity
+      servicePublishingStrategy:
+        nodePort:
+          address: api.openshift-{{ $cn }}.{{ .Values.baseDomain }}
+        type: NodePort
+    - service: Ignition
+      servicePublishingStrategy:
+        nodePort:
+          address: api.openshift-{{ $cn }}.{{ .Values.baseDomain }}
+        type: NodePort
+  {{- else }}
+    {{- /* Also exactly what HyperShift defaults a KubeVirt cluster to
+           (cmd/cluster/core GetIngressServicePublishingStrategyMapping). */}}
+    - service: APIServer
+      servicePublishingStrategy:
+        type: LoadBalancer
+    - service: OAuthServer
+      servicePublishingStrategy:
+        type: Route
+    - service: Konnectivity
+      servicePublishingStrategy:
+        type: Route
+    - service: Ignition
+      servicePublishingStrategy:
+        type: Route
+  {{- end }}
+{{- end }}

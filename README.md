@@ -1,10 +1,11 @@
 # helm-charts-hostedclusters-setup
 
-> **This chart currently contains the DHCP scope integration only.** The
-> `HostedCluster` / `NodePool` resources that provision the cluster itself live in
-> the air-gapped GitLab copy of this chart (`redbull/helm-charts/hostedclusters-setup`)
-> and have not been mirrored here yet. Deploying this chart as-is creates a DHCP
-> scope and **no hosted cluster**. See [Convergence](#convergence).
+> **The hosted cluster itself is off by default.** The `HostedCluster` / `NodePool`
+> templates are ported from the air-gapped GitLab copy of this chart
+> (`redbull/helm-charts/hostedclusters-setup`) and render only with
+> `hostedCluster.enabled: true`. Without it, deploying this chart creates a DHCP
+> scope and **no hosted cluster**, exactly as before. See
+> [The hosted cluster](#the-hosted-cluster) and [Convergence](#convergence).
 
 Rendered once per hosted cluster by the `gitops-day1` ApplicationSet cascade, from
 a single values file in the values repo.
@@ -205,6 +206,71 @@ compared at all, so leaving one to the API would also mean never detecting drift
 | `startRange` + `endRange` | the subnet's `.1` – `.253` | Derived as a **pair** — one bound without the other fails the render. `.253` keeps the range clear of the derived `.254` gateway, which the API would otherwise reject as a gateway inside the leasable pool. /24 only, like `gateway`. Exclusions carve holes inside the range; they do not move its bounds. |
 | `failover.relationshipName` | `<scopeName>-failover` | Windows caps it at 64 characters; a longer derived name fails the render rather than being truncated. The suffix is appended verbatim, so a derived `scopeName` gives `CLUSTER-A-failover` — mixed case on purpose, and matched character for character by the CI validator. |
 
+## The hosted cluster
+
+`templates/hc.yaml`, `nodepool.yaml`, `namespace.yaml`, `nodepool-configmaps.yaml`
+and `capi-kyverno-policy.yaml`, with `_hostedcluster-helpers.tpl`. They render only
+with `hostedCluster.enabled: true`, set at whichever layer of the values repo owns
+the decision (the sandbox MCE's `values.yaml` does it today).
+
+```
+hcp-<clusterName>                          HostedCluster openshift-<clusterName>  (wave 2)
+                                           NodePool per nodepool[] entry          (wave 4)
+                                           ConfigMaps for nodepool[].configs and tuningConfig
+hcp-<clusterName>-openshift-<clusterName>  HyperShift's control-plane namespace, created ahead
+                                           of it; the Kyverno policy (kyverno.enabled) goes here
+```
+
+**Production values render what the GitLab copy renders.** The templates read the
+same top-level keys (`mastertag`, `workertag`, `imagePath`, `imageHc`, `platform`,
+`nodepool[]`, `etcd`, the `disable*` flags…), and every key added here defaults to
+what the GitLab copy hardcodes. `tests/golden/` holds the GitLab copy's own output
+for two production-shaped fixtures, and the tests compare against it. Checked once by
+hand against the whole sanitized export of the production values repo as well (51
+cluster files, 99 NodePools): identical HostedClusters and NodePools.
+
+What the port changes on purpose:
+
+- `hcp-generic` is not rendered. It holds the owner-record ConfigMaps, which are
+  not ported, and it is shared by every cluster on an MCE.
+- The Kyverno policy needs `kyverno.enabled` too: on an MCE without Kyverno it would
+  fail every sync.
+- The GitLab `nodepool.yaml` writes `tuningConfig` twice; parsers keep the second
+  copy, which is the one rendered now.
+- **This chart renders no Secret.** The pull secret, SSH key, etcd encryption key and
+  identity-provider Secrets are referenced by name and must exist in
+  `hcp-<clusterName>`.
+
+Keys added, each defaulting to the GitLab behaviour while absent (`values.yaml`
+lists them):
+
+| Key | Default | Lab |
+|---|---|---|
+| `releaseRepo` | `openshift/release-images` | `ocp-release` (with `imagePath: quay.io/openshift-release-dev`) |
+| `cpoRepo` | `openshift/release` | `""`: no control-plane-operator annotation, the payload's own CPO |
+| `kubevirtInfra` | `external` (infra kubeconfig, NAD networks) | `local`: VMs on the MCE, `platform.kubevirt: {}` |
+| `baseDomain` | `example.internal` | `""`: HyperShift derives it from the MCE's apps domain |
+| `clusterNetworkCidr`, `serviceNetworkCidr` | the sanitized placeholders | clear of the MCE's own networks |
+| `pullSecretName` | `openshift-<clusterName>-pull-secret` | |
+| `sshKeySecretName`, `etcdEncryptionKeySecretName` | `openshift-<clusterName>-ssh-key`, `-etcd-encryption-key` | `""`: none |
+| `additionalTrustBundleName`, `registriesTrustedCAName` | `user-ca-bundle`, `custom-registries-config` | `""`: none |
+| `disableLdap` | `false` | `true`, next to the existing `disableOcpadmin` |
+| `services` | the GitLab branches (`serviceType`) | unset: LoadBalancer API, Routes, which is also HyperShift's KubeVirt default |
+| `pausedUntil` | unset | the upgrade workflow's abort writes `"true"`: HostedCluster and every NodePool |
+| `nodepool[].storageClass` | unset | the KubeVirt root volume's storage class |
+
+`releaseRepo` (and `cpoRepo`) must describe the same layout as the upgrade rules'
+`release` block in the values repo (`upgrade/ladder.yaml`): the upgrade workflow
+builds and pins the image references from the rules, Argo CD renders them from here.
+
+**Only fields HyperShift keeps as written are rendered.** HyperShift saves the
+HostedCluster through its Go types, which drop empty lists and empty optional
+fields. A field rendered empty, such as `imageContentSources: []`, would then differ
+from the cluster for ever: Argo CD reports the HostedCluster OutOfSync, and the
+upgrade workflow refuses to sync an Application with anything out of sync it did not
+expect. So an empty `imageContentSources` or `allowedRegistriesForImport` is left out,
+and so is the `image` block when it would hold nothing.
+
 ## Templates and tests
 
 `templates/dhcp-scope-request.yaml` and `templates/_dhcp-helpers.tpl` are **owned
@@ -233,6 +299,10 @@ suite into silent skips and the job still passes.
   `required` guards, and the gating on `dhcp_values.scopeName`.
 - **`tests/test_render_parity.py`** — that `payload.body` equals the payload shape
   the DHCP API returns from `GET`, field order included.
+- **`tests/test_hostedcluster.py`** — the hosted cluster: off by default, the GitLab
+  copy's output for production-shaped values (`tests/golden/`), and a lab cluster
+  (`tests/fixtures/hostedcluster/lab-kubevirt-local.yaml`) that renders nothing
+  HyperShift would rewrite. CI also lints the chart with each fixture.
 
 That second one is the contract worth understanding. provider-http compares the
 GET response against `payload.body` every ~60s and PUTs on any difference, so a
@@ -256,4 +326,8 @@ the air-gapped environment. Two ways it converges, undecided:
 2. the GitLab chart's `HostedCluster` / `NodePool` templates are added here and
    GitLab mirrors from GitHub.
 
-Until then, treat the GitLab chart as the one that actually builds clusters.
+The second has started: `hc.yaml` and `nodepool.yaml` are ported here, behind
+`hostedCluster.enabled`, and build the sandbox's upgrade demo cluster. The GitLab
+copy's other templates (DNS records, certificates, CA bundles, the Secrets with key
+material, backup schedules, logging, the owner record) are not. Until they are,
+treat the GitLab chart as the one that builds production clusters.

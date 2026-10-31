@@ -1,0 +1,216 @@
+# GOLDEN: what the air-gapped GitLab copy of this chart (templates/hc.yaml and
+# nodepool.yaml) renders from tests/fixtures/hostedcluster/production-kubevirt-external.yaml with
+# clusterName=tenant-a. Rendered 2026-10-31 from a sanitized export of that copy.
+# Never regenerate it from THIS chart: it is the reference this chart's output is
+# compared with. Change it only together with the GitLab copy.
+---
+# Source: hostedclusters-setup/templates/hc.yaml
+apiVersion: hypershift.openshift.io/v1beta1
+kind: HostedCluster
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    hypershift.openshift.io/control-plane-operator-image: registry-internal/openshift-release-hc/openshift/release:4.22.8-x86_64-hypershift
+  name: openshift-tenant-a
+  namespace: hcp-tenant-a
+  finalizers:
+    - hypershift.openshift.io/finalizer
+  labels:
+    allowDeletion: "true"
+spec:
+  fips: false
+  release:
+    image: "registry-internal/openshift-release-hc/openshift/release-images:4.22.8-x86_64"    
+  dns:
+    baseDomain: apps.example.internal
+  controllerAvailabilityPolicy: SingleReplica
+  etcd:
+    managed:
+      storage:
+        persistentVolume:
+          size: 16Gi
+          storageClassName: powerflex-sp2
+        type:  PersistentVolume
+    managementType: Managed
+  infrastructureAvailabilityPolicy: HighlyAvailable
+  imageContentSources:
+    - mirrors:
+      - registry-internal/openshift-release/openshift/release-images
+      source: quay.io/openshift-release-dev/ocp-release
+  platform:
+    kubevirt:
+      credentials:
+        infraKubeConfigSecret:
+          key: kubeconfig
+          name: infra-kubeconfig
+        infraNamespace: openshift-tenant-a
+    type: KubeVirt
+  additionalTrustBundle:
+    name: user-ca-bundle
+  secretEncryption:
+    aescbc:
+      activeKey:
+        name: openshift-tenant-a-etcd-encryption-key
+    type: aescbc
+  networking:
+    clusterNetwork:
+      - cidr: 192.0.2.2/14
+    networkType: OVNKubernetes
+    serviceNetwork:
+      - cidr: 192.0.2.3/16
+  pullSecret:
+    name: openshift-tenant-a-pull-secret # must much the pull secret been created for the cluster
+  configuration:
+    scheduler:
+      mastersSchedulable: false
+      profile: HighNodeUtilization        
+    operatorhub:
+      disableAllDefaultSources: true
+    oauth:
+      identityProviders:
+      - ldap:
+          attributes:
+            email:
+            - mail
+            id:
+            - sAMAccountName
+            name:
+            - cn
+            preferredUsername:
+            - sAMAccountName
+          bindDN: 977SVN@example.internal
+          bindPassword:
+            name: openshift-tenant-a-ldap-bind-password
+          insecure: true
+          url: ldap://ldap.example.internal:389/DC=example,DC=internal?sAMAccountName?
+        mappingMethod: claim
+        name: ldap-provider
+        type: LDAP    
+    image:
+      additionalTrustedCA:
+        name: custom-registries-config
+      allowedRegistriesForImport:
+      - domainName: registry-internal
+        insecure: false
+  issuerURL: 'https://kubernetes.default.svc'
+  sshKey:
+    name: openshift-tenant-a-ssh-key
+  autoscaling: {}  
+  olmCatalogPlacement: management
+  services:
+    - service: APIServer
+      servicePublishingStrategy:
+        nodePort:
+          address: api.openshift-tenant-a.apps.example.internal
+        type: NodePort
+    - service: OAuthServer
+      servicePublishingStrategy:
+        nodePort:
+          address: api.openshift-tenant-a.apps.example.internal
+        type: NodePort
+    - service: OIDC
+      servicePublishingStrategy:
+        nodePort:
+          address: api.openshift-tenant-a.apps.example.internal
+        type: None
+    - service: Konnectivity
+      servicePublishingStrategy:
+        nodePort:
+          address: api.openshift-tenant-a.apps.example.internal
+        type: NodePort
+    - service: Ignition
+      servicePublishingStrategy:
+        nodePort:
+          address: api.openshift-tenant-a.apps.example.internal
+        type: NodePort
+
+---
+# Source: hostedclusters-setup/templates/nodepool.yaml
+apiVersion: hypershift.openshift.io/v1beta1
+kind: NodePool
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  name: kv-workers
+  namespace: hcp-tenant-a
+  finalizers:
+    - hypershift.openshift.io/finalizer
+  labels:
+    allowDeletion: "false"
+    maxReplicas: "2"
+    minReplicas: "1"
+spec:
+  nodeDrainTimeout: 0s
+  arch: amd64
+  clusterName: openshift-tenant-a
+  management:
+    autoRepair: true
+    
+    replace:
+      rollingUpdate:
+        maxSurge: 2
+        maxUnavailable: 0
+      strategy: RollingUpdate
+    upgradeType: Replace
+    
+  platform:
+    kubevirt:
+      additionalNetworks:
+      - name: default/nad-512
+      attachDefaultNetwork: false
+      compute:
+        cores: 8
+        memory: 32Gi
+        qosClass: Burstable
+      rootVolume:
+        persistent:
+          size: 32Gi
+        type: Persistent
+    type: KubeVirt
+  release:
+    image: "registry-internal/openshift-release/openshift/release-images:4.22.8-x86_64"
+  replicas: 2
+
+
+---
+# Source: hostedclusters-setup/templates/nodepool.yaml
+apiVersion: hypershift.openshift.io/v1beta1
+kind: NodePool
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  name: kv-workers-b
+  namespace: hcp-tenant-a
+  finalizers:
+    - hypershift.openshift.io/finalizer
+  labels:
+    allowDeletion: "false"
+    maxReplicas: "1"
+    minReplicas: "0"
+spec:
+  nodeDrainTimeout: 0s
+  arch: amd64
+  clusterName: openshift-tenant-a
+  management:
+    autoRepair: false
+    
+    upgradeType: InPlace
+    
+  platform:
+    kubevirt:
+      additionalNetworks:
+      - name: default/nad-513
+      attachDefaultNetwork: true
+      compute:
+        cores: 6
+        memory: 12Gi
+        qosClass: Burstable
+      rootVolume:
+        persistent:
+          size: 32Gi
+        type: Persistent
+    type: KubeVirt
+  release:
+    image: "registry-internal/openshift-release/openshift/release-images:4.22.7-x86_64"
+  replicas: 1
+

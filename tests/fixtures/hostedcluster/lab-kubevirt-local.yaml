@@ -1,0 +1,47 @@
+# A connected lab's cluster: KubeVirt VMs on the MCE itself, releases straight
+# from quay.io, and none of production's CA bundles, identity providers or key
+# Secrets. The shape of the upgrade demo cluster in the values repo
+# (gitops-day1-platform-config: sites/site1/mces/ocp4-mce-workflow-test/values.yaml
+# and hostedClusters/ocp4-upgrade-demo.yaml), merged into one file.
+hostedCluster:
+  enabled: true
+release_segment:
+  workflows_api_url: ""
+etcd:
+  storageClassName: gp3-csi
+controllerAvailabilityPolicy: SingleReplica
+infrastructureAvailabilityPolicy: SingleReplica
+additionalTrustBundleName: ""
+registriesTrustedCAName: ""
+disableProxy: true
+disableLdap: true
+disableOcpadmin: true
+disableAPIDNS: true
+sshKeySecretName: ""
+etcdEncryptionKeySecretName: ""
+
+platform: kubevirt
+kubevirtInfra: local
+mastertag: 4.19.53-x86_64
+imagePath: quay.io/openshift-release-dev
+releaseRepo: ocp-release
+cpoRepo: ""
+baseDomain: ""
+clusterNetworkCidr: 10.132.0.0/14
+serviceNetworkCidr: 172.31.0.0/16
+nodepool:
+  - name: upgrade-demo-workers
+    replicas: 2
+    labels:
+      allowDeletion: false
+    workertag: 4.19.53-x86_64
+    upgradeType: InPlace
+    inPlace:
+      maxUnavailable: 1
+    cores: 2
+    memory: 8Gi
+    size: 32Gi
+    storageClass: gp3-csi
+upgrade:
+  profile: generic
+  wave: 0

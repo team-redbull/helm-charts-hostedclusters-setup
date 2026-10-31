@@ -1,0 +1,85 @@
+# A production-shaped Agent cluster, synthetic: the keys the air-gapped values
+# repo sets (sites/configValues.yaml, a site's and an MCE's values.yaml and a
+# cluster file), merged into one file. Every name, address and registry is a
+# placeholder. tests/golden/production-agent.yaml is what the GitLab copy of the
+# chart renders from it.
+hostedCluster:
+  enabled: true
+
+# sites/configValues.yaml
+platform: agent
+hostInventory: inventory
+defaultImageContentSources:
+  - mirrors:
+      - registry-internal/openshift-release/openshift/release-images
+      - registry-internal/openshift-release/openshift/release
+    source: quay.io/openshift-release-dev/ocp-release
+  - mirrors:
+      - registry-internal/openshift-release/openshift/release-images
+      - registry-internal/openshift-release/openshift/release
+    source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+  - mirrors:
+      - registry-internal/operators
+    source: registry.redhat.io
+defaultImageRegistries:
+  - domainName: registry-internal
+    insecure: false
+  - domainName: quay.io
+    insecure: false
+etcd:
+  size: 8Gi
+  storageClassName: powerflex-sp1
+  type: PersistentVolume
+scheduler:
+  config:
+    mastersSchedulable: false
+    profile: HighNodeUtilization
+
+# sites/<site>/mces/<mce>/values.yaml
+imagePath: registry-internal/openshift-release
+dns:
+  site: site-a
+  zone: example.internal
+certificate:
+  mceName: cluster-mce-a
+
+# sites/<site>/mces/<mce>/hostedClusters/ocp4-tenant-a.yaml
+mastertag: 4.20.18-x86_64
+imageContentSources:
+  - mirrors:
+      - registry-internal/operators-extra
+    source: registry.redhat.io
+vlanId: 400
+nodepool:
+  - name: tenant-a-zone-a
+    replicas: 3
+    infraEnvName: dell-r660-128c-1024gb
+    workertag: 4.20.18-x86_64
+    labels:
+      allowDeletion: false
+      maxReplicas: 4
+    inPlace:
+      maxUnavailable: "100%"
+    nodeLabels:
+      topology.kubernetes.io/zone: zone-a
+    configs:
+      - name: nm-conf-tenant-a
+      - name: worker-kubeletconfig
+    tuningConfig: tuned-tenant-a
+  - infraEnvName: hp-dl380-64c-512gb
+    replicas: 2
+    labels:
+      minReplicas: "'''1'''"
+    nodeDrainTimeout: 30m
+mcConfigMap:
+  - name: nm-conf-tenant-a
+    config: |
+      apiVersion: machineconfiguration.openshift.io/v1
+      kind: MachineConfig
+      metadata:
+        name: nm-conf-tenant-a
+tuningConfigmap:
+  - name: tuned-tenant-a
+    tuning: |
+      apiVersion: tuned.openshift.io/v1
+      kind: Tuned
