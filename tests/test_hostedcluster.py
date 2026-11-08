@@ -286,6 +286,26 @@ def test_a_local_nodepool_may_still_join_an_extra_network():
     assert kubevirt["attachDefaultNetwork"] is True
 
 
+def test_a_nodepools_annotations_reach_the_nodepool_and_its_labels_stay_the_three():
+    # The workflows' update-nodepool reads redbull.io/scale-down-policy off the
+    # NodePool, so it has to be writable in day1: as an annotation of the entry.
+    (nodepool,) = _kind(_lab(
+        "--set-json", 'nodepool[0].annotations={"redbull.io/scale-down-policy": "fewest-pods", "redbull.io/size": 3}',
+        "--set-json", 'nodepool[0].labels={"allowDeletion": false, "team": "a"}',
+    ), "NodePool")
+    assert nodepool["metadata"]["annotations"] == {
+        "argocd.argoproj.io/sync-wave": "4", "redbull.io/scale-down-policy": "fewest-pods", "redbull.io/size": "3",
+    }
+    assert nodepool["metadata"]["labels"] == {"allowDeletion": "false", "maxReplicas": "2", "minReplicas": "1"}
+
+
+def test_a_nodepool_may_not_move_its_own_sync_wave():
+    r = _helm("--set-string", "clusterName=x", "-f", str(FIXTURES / "lab-kubevirt-local.yaml"),
+              "--set-json", 'nodepool[0].annotations={"argocd.argoproj.io/sync-wave": "1"}')
+    assert r.returncode != 0
+    assert "annotations may not set argocd.argoproj.io/sync-wave" in r.stderr
+
+
 def test_an_unknown_kubevirt_infra_fails():
     r = _helm("--set-string", "clusterName=x", "-f", str(FIXTURES / "lab-kubevirt-local.yaml"),
               "--set-string", "kubevirtInfra=remote")
