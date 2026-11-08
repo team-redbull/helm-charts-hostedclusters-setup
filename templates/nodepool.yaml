@@ -6,7 +6,9 @@
        volume's storageClass and kubevirtInfra: local, where the VMs sit on the
        MCE's own pod network, so no additionalNetworks / attachDefaultNetwork
        unless a nodepool sets them. Also fixed: a tuningConfig rendered the key
-       twice. */}}
+       twice. And a nodepool's annotations reach the NodePool, so a NodePool
+       setting such as redbull.io/scale-down-policy is written in the values
+       repo; its labels stay the three below. */}}
 {{- if include "hc.enabled" . }}
 {{- $clusterName := include "hc.clusterName" . }}
 {{- $platform := .Values.platform | default "" }}
@@ -23,6 +25,7 @@
 {{- $seen := dict }}
 {{- range .Values.nodepool }}
 {{- $labels := .labels | default dict }}
+{{- $annotations := .annotations | default dict }}
 {{- $selector := .agentLabelSelector | default dict }}
 {{- $infraEnv := .infraEnvName | default $selector.nodeLabelValue }}
 {{- if and .infraEnvName $selector.nodeLabelValue (ne .infraEnvName $selector.nodeLabelValue) }}
@@ -45,12 +48,18 @@
 {{- $allowDeletion := ternary $labels.allowDeletion "false" (hasKey $labels "allowDeletion") }}
 {{- $maxReplicas := ternary $labels.maxReplicas $replicas (hasKey $labels "maxReplicas") }}
 {{- $minReplicas := ternary $labels.minReplicas (max 0 (sub $replicas 1)) (hasKey $labels "minReplicas") }}
+{{- if hasKey $annotations "argocd.argoproj.io/sync-wave" }}
+{{- fail (printf "nodepool %q: annotations may not set argocd.argoproj.io/sync-wave; the chart orders the NodePool after its HostedCluster itself." $name) }}
+{{- end }}
 ---
 apiVersion: hypershift.openshift.io/v1beta1
 kind: NodePool
 metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "4"
+    {{- range $key, $value := $annotations }}
+    {{ $key | quote }}: {{ $value | toString | quote }}
+    {{- end }}
   name: {{ $name }}
   namespace: hcp-{{ $clusterName }}
   finalizers:

@@ -258,6 +258,7 @@ lists them):
 | `services` | the GitLab branches (`serviceType`) | unset: LoadBalancer API, Routes, which is also HyperShift's KubeVirt default |
 | `pausedUntil` | unset | the upgrade workflow's abort writes `"true"`: HostedCluster and every NodePool |
 | `nodepool[].storageClass` | unset | the KubeVirt root volume's storage class |
+| `nodepool[].annotations` | none | passed onto the NodePool as written, values as strings, next to the chart's own sync-wave (which an entry may not set). The workflows' update-nodepool reads `redbull.io/scale-down-policy` (`fewest-pods`, `least-requested`, `least-utilized`) from it |
 
 `releaseRepo` (and `cpoRepo`) must describe the same layout as the upgrade rules'
 `release` block in the values repo (`upgrade/ladder.yaml`): the upgrade workflow
